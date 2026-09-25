@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pos
+      POSTGRES_USER: pos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_dev_only}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pos -d pos"]
+      interval: 3s
+      retries: 20
+    volumes:
+      - pos_data:/var/lib/postgresql/data
+  api:
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://pos:${POSTGRES_PASSWORD:-local_dev_only}@db:5432/pos
+      APP_ENV: demo
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  pos_data:
