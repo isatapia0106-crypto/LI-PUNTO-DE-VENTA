@@ -16,10 +16,16 @@ Abrir http://localhost:8000. Por defecto usa SQLite local en `pos.db`. Para Post
 
 ## Módulos y alcance
 
-Se conserva el árbol ya creado en GitHub: `backend/app/api`, `core`, `db`, `services`, `integrations`; `frontend/public` y `frontend/src/features`; `desktop`, `database`, `infrastructure`, `docs`, `scripts` y `tests`. Se reservan carpetas para ventas, caja, inventario, productos, clientes, proveedores, compras, devoluciones, traspasos, cotizaciones, facturación, reportes, usuarios, auditoría, configuración, Clip y sucursales. **Únicamente catálogo, stock, venta, historial y registro de auditoría tienen código funcional** en este primer módulo.
+Se conserva el árbol ya creado en GitHub: `backend/app/api`, `core`, `db`, `services`, `integrations`; `frontend/public` y `frontend/src/features`; `desktop`, `database`, `infrastructure`, `docs`, `scripts` y `tests`. Se reservan carpetas para ventas, caja, inventario, productos, clientes, proveedores, compras, devoluciones, traspasos, cotizaciones, facturación, reportes, usuarios, auditoría, configuración, Clip y sucursales. **Actualmente funcionan catálogo, existencias por sucursal, kardex básico, apertura/cierre de caja, retiro, venta con clave de reintento, historial, resumen y registro de auditoría.** Los demás módulos siguen pendientes.
 
-Demo: sucursal 1, identidad empresa 1, precios antes de IVA 16%, sin procesamiento real de pagos. En producción falta JWT/RBAC, aislamiento de sucursal validado contra el usuario, Alembic, caja/cortes, facturación CFDI/PAC, Clip, modo offline con sincronización e idempotencia. `APP_ENV=production` bloquea operaciones mientras falte autenticación. Nunca uses la demo para ventas reales.
+Demo: seis sucursales configuradas para la empresa de prueba 1, identidad mediante cabecera de demostración, precios antes de IVA 16%, sin procesamiento real de pagos. En producción faltan JWT/RBAC, aislamiento de sucursal validado contra el usuario, migraciones Alembic, folios fiscales, caja por cajero, facturación CFDI/PAC, Clip y modo offline con sincronización. La clave de reintento actual solo cubre ventas en línea. `APP_ENV=production` bloquea operaciones mientras falte autenticación. Nunca uses la demo para ventas reales.
 
 ## Pruebas
 
 `python -m pytest -q tests` desde raíz. Cada venta descuenta existencias y crea log dentro de la misma transacción. PostgreSQL usa bloqueos de fila para cobros simultáneos. No se confirman ventas con stock insuficiente ni pagos insuficientes.
+
+## Nota de actualización
+
+El esquema cambió respecto a la primera demo. `create_all` crea tablas nuevas, pero no modifica columnas de tablas existentes. Si ya tienes un `pos.db` de la demo anterior, **consérvalo y haz respaldo**; usa una base de demostración nueva mediante `DATABASE_URL=sqlite:///./pos_nuevo.db` hasta contar con una migración Alembic verificada. No apuntes esta versión a datos de negocio.
+
+Consulta `docs/operations/ESTADO_Y_PLAN.md` para el alcance real y los siguientes módulos.

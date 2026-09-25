@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 const pesos = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(n);
-let products = [], cart = new Map();
+let products = [], cart = new Map(), cash = {open:false}, pendingKey = null;
+const branchId = () => Number($('branch').value);
 const notice = message => { $('notice').textContent = message; };
 async function request(url, options={}) {
   const response = await fetch(url, {headers:{'Content-Type':'application/json'},...options});
@@ -8,9 +9,14 @@ async function request(url, options={}) {
   return response.json();
 }
 async function refresh(){
-  products = await request('/api/products?branch_id=1');
+  products = await request(`/api/products?branch_id=${branchId()}`);
   drawProducts();
-  const sales = await request('/api/sales?branch_id=1');
+  const sales = await request(`/api/sales?branch_id=${branchId()}`);
+  cash = await request(`/api/cash/current?branch_id=${branchId()}`);
+  const summary = await request(`/api/reports/summary?branch_id=${branchId()}`);
+  $('summary').textContent = `${summary.sales_count} ventas · ${pesos(summary.total)} total · Efectivo ${pesos(summary.by_method.cash)}`;
+  $('cashStatus').textContent = cash.open ? `Caja #${cash.id} abierta · Esperado ${pesos(cash.expected)}` : 'Caja cerrada';
+  $('openControls').hidden = cash.open; $('closeControls').hidden = !cash.open; drawCart();
   $('sales').replaceChildren(...sales.map(s => {
     const row=document.createElement('div');row.className='sale';
     const label=document.createElement('span');label.textContent=`Venta #${s.id} · ${new Date(s.created_at).toLocaleString('es-MX')}`;
@@ -37,11 +43,15 @@ function drawCart(){
   }));
   const subtotal=[...cart].reduce((s,[id,q])=>s+Number(products.find(p=>p.id===id).price)*q,0);
   const tax=Math.round(subtotal*16)/100; $('subtotal').textContent=pesos(subtotal);$('tax').textContent=pesos(tax);$('total').textContent=pesos(subtotal+tax);
-  $('charge').disabled=cart.size===0;
+  $('charge').disabled=cart.size===0 || !cash.open;
 }
 $('search').oninput=drawProducts;
 $('search').onkeydown=e=>{if(e.key==='Enter'){const sku=products.find(p=>p.sku.toLowerCase()===$('search').value.trim().toLowerCase());if(sku){if((cart.get(sku.id)||0)<sku.stock){cart.set(sku.id,(cart.get(sku.id)||0)+1);drawCart();}$('search').value='';drawProducts();}}};
 $('new').onclick=()=>$('dialog').showModal();
-$('form').onsubmit=async e=>{if(e.submitter?.value!=='save')return;e.preventDefault();const f=new FormData(e.currentTarget);try{await request('/api/products',{method:'POST',body:JSON.stringify({sku:f.get('sku'),name:f.get('name'),price:f.get('price'),stock:Number(f.get('stock')),branch_id:1})});$('dialog').close();$('form').reset();await refresh();notice('Producto agregado');}catch(err){notice(err.message);$('dialog').close();}};
-$('charge').onclick=async()=>{if(!cart.size)return;const subtotal=[...cart].reduce((s,[id,q])=>s+Number(products.find(p=>p.id===id).price)*q,0);const total=Math.round((subtotal+Math.round(subtotal*16)/100)*100)/100;const method=$('method').value;const paid=Number($('paid').value);if(!Number.isFinite(paid)||paid<total){notice(`Pago insuficiente. Total: ${pesos(total)}`);return;}if(method!=='cash'&&paid!==total){notice('Tarjeta o transferencia debe coincidir con el total');return;}if(!confirm(`Confirmar venta por ${pesos(total)}?`))return;try{const s=await request('/api/sales',{method:'POST',body:JSON.stringify({branch_id:1,items:[...cart].map(([product_id,quantity])=>({product_id,quantity})),payment_method:method,paid})});cart.clear();$('paid').value='';await refresh();drawCart();notice(`Venta #${s.id} registrada. Cambio: ${pesos(s.change)}`);}catch(err){notice(err.message);}};
-refresh().then(drawCart).catch(err=>notice(err.message));
+$('form').onsubmit=async e=>{if(e.submitter?.value!=='save')return;e.preventDefault();const f=new FormData(e.currentTarget);try{await request('/api/products',{method:'POST',body:JSON.stringify({sku:f.get('sku'),name:f.get('name'),price:f.get('price'),stock:Number(f.get('stock')),branch_id:branchId()})});$('dialog').close();$('form').reset();await refresh();notice('Producto agregado');}catch(err){notice(err.message);$('dialog').close();}};
+$('charge').onclick=async()=>{if(!cart.size)return;const subtotal=[...cart].reduce((s,[id,q])=>s+Number(products.find(p=>p.id===id).price)*q,0);const total=Math.round((subtotal+Math.round(subtotal*16)/100)*100)/100;const method=$('method').value;const paid=Number($('paid').value);if(!Number.isFinite(paid)||paid<total){notice(`Pago insuficiente. Total: ${pesos(total)}`);return;}if(method!=='cash'&&paid!==total){notice('Tarjeta o transferencia debe coincidir con el total');return;}if(!confirm(`Confirmar venta por ${pesos(total)}?`))return;try{const s=await request('/api/sales',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':pendingKey ??= crypto.randomUUID()},body:JSON.stringify({branch_id:branchId(),items:[...cart].map(([product_id,quantity])=>({product_id,quantity})),payment_method:method,paid})});pendingKey=null;cart.clear();$('paid').value='';await refresh();drawCart();notice(`Venta #${s.id} registrada. Cambio: ${pesos(s.change)}`);}catch(err){notice(err.message);}};
+$('branch').onchange=()=>{cart.clear();pendingKey=null;refresh().catch(err=>notice(err.message));};
+$('openCash').onclick=async()=>{try{await request('/api/cash/open',{method:'POST',body:JSON.stringify({branch_id:branchId(),opening:$('opening').value})});await refresh();notice('Caja abierta');}catch(err){notice(err.message);}};
+$('withdrawCash').onclick=async()=>{try{const result=await request(`/api/cash/${cash.id}/withdraw`,{method:'POST',body:JSON.stringify({amount:$('withdrawAmount').value,reason:$('withdrawReason').value})});$('withdrawAmount').value='';$('withdrawReason').value='';await refresh();notice(`Retiro registrado: ${pesos(result.amount)}`);}catch(err){notice(err.message);}};
+$('closeCash').onclick=async()=>{if(!confirm('¿Cerrar esta caja y registrar el efectivo contado?'))return;try{const result=await request(`/api/cash/${cash.id}/close`,{method:'POST',body:JSON.stringify({counted:$('counted').value})});await refresh();notice(`Corte registrado. Diferencia: ${pesos(result.difference)}`);}catch(err){notice(err.message);}};
+request('/api/branches').then(list=>{for(const b of list){const opt=document.createElement('option');opt.value=b.id;opt.textContent=b.name;$('branch').append(opt);}return refresh();}).catch(err=>notice(err.message));
