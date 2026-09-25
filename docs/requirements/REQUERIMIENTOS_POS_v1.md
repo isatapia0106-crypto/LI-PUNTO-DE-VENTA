@@ -1,10 +1,10 @@
 # Requerimientos · LI Punto de Venta
 
-**Versión:** 1.0 · **Fecha:** 24 de septiembre de 2026 · **Estado:** borrador para validación funcional
+**Versión:** 1.1 · **Fecha:** 24 de septiembre de 2026 · **Estado:** borrador para validación funcional
 
 ## 1. Objetivo y alcance
 
-Construir un punto de venta para operar varias sucursales y razones sociales, con ventas, caja, productos, inventario, clientes, compras, facturación y reportes. Tomamos como referencia los módulos discutidos para TPN/Sicar X y la estructura ya creada en LI-PUNTO-DE-VENTA. La implementación actual es una demostración y no procesa operaciones productivas.
+Construir un punto de venta preparado inicialmente para seis sucursales, con configuración de razones sociales, con ventas, caja, productos, inventario, clientes, compras, facturación y reportes. Tomamos como referencia los módulos discutidos para TPN/Sicar X y la estructura ya creada en LI-PUNTO-DE-VENTA. La implementación actual es una demostración y no procesa operaciones productivas.
 
 **Flujo principal:** iniciar sesión → seleccionar sucursal y caja autorizadas → abrir caja → buscar o escanear productos → armar carrito → validar existencias y precios → confirmar cobro → registrar venta, movimiento de inventario y auditoría → entregar comprobante → realizar corte de caja.
 
@@ -51,7 +51,7 @@ Construir un punto de venta para operar varias sucursales y razones sociales, co
 
 ## 4. Reglas de negocio
 
-1. Dos razones sociales y seis sucursales son el escenario de planeación TPN; LI debe configurarlas, no codificarlas como constantes. Falta confirmar nombres fiscales y asignación exacta de sucursales.
+1. LI operará inicialmente con seis sucursales configurables: Zamora, Zacapu, Uruapan, 20 de Noviembre, Maravatío y CDMX, conforme al escenario de TPN. Las sucursales se administran como registros; no se codifican como constantes. Se mantiene por confirmar cuántas razones sociales usará LI y la asignación fiscal de cada sucursal.
 2. Cada producto y venta pertenece a una empresa; el stock, la caja y la venta también pertenecen a una sucursal autorizada. El folio debe ser único dentro de su serie.
 3. Los precios, descuentos e impuestos se calculan y validan en el servidor. El 16 % fijo y los precios antes de IVA de la demo son supuestos temporales; el tratamiento fiscal real será configurable por producto y operación.
 4. No se puede vender una cantidad superior al stock disponible, salvo una política explícita de venta bajo pedido aprobada posteriormente.
@@ -94,7 +94,7 @@ Construir un punto de venta para operar varias sucursales y razones sociales, co
 
 ## 8. Definiciones pendientes
 
-1. Confirmar si LI operará las mismas seis sucursales y dos razones sociales de TPN o una organización distinta.
+1. Confirmar el nombre oficial y los datos de cada una de las seis sucursales, así como el número de razones sociales de LI y la asignación fiscal de cada sucursal.
 2. Definir si los precios incluyen IVA, productos exentos/tasa cero, descuentos, promociones y política de venta a crédito.
 3. Elegir PAC y aclarar si Clip será cobro integrado, registro manual inicial o ambos; confirmar modelo de terminal y certificaciones necesarias.
 4. Especificar impresoras, lectores, cajones, equipos Windows, funcionamiento offline y volumen esperado por sucursal.
