@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, ForeignKey, String, Integer, Numeric, DateTime, select, UniqueConstraint, inspect
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 
 DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///./pos.db')
@@ -74,6 +75,19 @@ class StockMovement(Base):
     reason: Mapped[str] = mapped_column(String(30))
     reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class StockTransfer(Base):
+    __tablename__ = 'stock_transfers'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer, index=True)
+    source_branch_id: Mapped[int] = mapped_column(ForeignKey('branches.id'))
+    target_branch_id: Mapped[int] = mapped_column(ForeignKey('branches.id'))
+    product_id: Mapped[int] = mapped_column(ForeignKey('products.id'))
+    quantity: Mapped[int] = mapped_column(Integer)
+    request_key: Mapped[str] = mapped_column(String(100))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (UniqueConstraint('empresa_id', 'request_key'),)
 
 class Product(Base):
     __tablename__ = 'products'
@@ -159,6 +173,12 @@ class AdjustStock(BaseModel):
     branch_id: int = Field(gt=0)
     change: int = Field(ge=-100000, le=100000)
     reason: str = Field(min_length=3, max_length=100)
+
+class TransferStock(BaseModel):
+    source_branch_id: int = Field(gt=0)
+    target_branch_id: int = Field(gt=0)
+    product_id: int = Field(gt=0)
+    quantity: int = Field(gt=0, le=100000)
 
 class LoginIn(BaseModel):
     username: str
@@ -403,6 +423,68 @@ def movements(branch_id: int, user: User = Depends(identity)):
         branch_for(db, user, branch_id)
         rows = db.scalars(select(StockMovement).where(StockMovement.empresa_id == empresa, StockMovement.branch_id == branch_id).order_by(StockMovement.id.desc()).limit(100)).all()
         return [{'id': x.id, 'product_id': x.product_id, 'change': x.change, 'reason': x.reason, 'reference_id': x.reference_id} for x in rows]
+
+@app.post('/api/stock/transfers', status_code=201)
+def transfer_stock(data: TransferStock, idempotency_key: str = Header(min_length=8, max_length=100), user: User = Depends(identity)):
+    require(user, 'stock_write')
+    if data.source_branch_id == data.target_branch_id:
+        raise HTTPException(422, 'Selecciona dos sucursales distintas')
+    with Session(engine) as db:
+        try:
+            branch_for(db, user, data.source_branch_id)
+            branch_for(db, user, data.target_branch_id)
+            # Consistent lock order serializes opposite-direction transfers in PostgreSQL.
+            db.scalars(select(Branch).where(Branch.id.in_((data.source_branch_id, data.target_branch_id)))
+                       .order_by(Branch.id).with_for_update()).all()
+            existing = db.scalar(select(StockTransfer).where(
+                StockTransfer.empresa_id == user.empresa_id, StockTransfer.request_key == idempotency_key))
+            if existing:
+                if (existing.source_branch_id, existing.target_branch_id, existing.product_id, existing.quantity) != (
+                    data.source_branch_id, data.target_branch_id, data.product_id, data.quantity):
+                    raise HTTPException(409, 'Clave de traspaso ya utilizada para otra operación')
+                return {'id': existing.id, 'source_branch_id': existing.source_branch_id,
+                        'target_branch_id': existing.target_branch_id, 'product_id': existing.product_id,
+                        'quantity': existing.quantity, 'replayed': True}
+            product = db.scalar(select(Product).where(Product.id == data.product_id, Product.empresa_id == user.empresa_id))
+            if product is None:
+                raise HTTPException(404, 'Producto no encontrado para esta empresa')
+            stocks = db.scalars(select(Stock).where(Stock.product_id == product.id,
+                Stock.branch_id.in_((data.source_branch_id, data.target_branch_id)))
+                .order_by(Stock.branch_id).with_for_update()).all()
+            by_branch = {stock.branch_id: stock for stock in stocks}
+            source = by_branch.get(data.source_branch_id)
+            if source is None or source.quantity < data.quantity:
+                raise HTTPException(409, 'Existencias insuficientes en sucursal origen')
+            target = by_branch.get(data.target_branch_id)
+            if target is None:
+                target = Stock(product_id=product.id, branch_id=data.target_branch_id, quantity=0)
+                db.add(target)
+            source.quantity -= data.quantity
+            target.quantity += data.quantity
+            transfer = StockTransfer(empresa_id=user.empresa_id, source_branch_id=data.source_branch_id,
+                target_branch_id=data.target_branch_id, product_id=product.id, quantity=data.quantity,
+                request_key=idempotency_key, actor_id=user.id)
+            db.add(transfer)
+            db.flush()
+            db.add_all([
+                StockMovement(empresa_id=user.empresa_id, branch_id=data.source_branch_id,
+                    product_id=product.id, change=-data.quantity, reason='transfer_out', reference_id=transfer.id),
+                StockMovement(empresa_id=user.empresa_id, branch_id=data.target_branch_id,
+                    product_id=product.id, change=data.quantity, reason='transfer_in', reference_id=transfer.id),
+                Audit(empresa_id=user.empresa_id, branch_id=data.source_branch_id,
+                    action='stock_transferred', record_id=transfer.id, actor_id=user.id),
+            ])
+            result = {'id': transfer.id, 'source_branch_id': data.source_branch_id,
+                      'target_branch_id': data.target_branch_id, 'product_id': product.id,
+                      'quantity': data.quantity, 'replayed': False}
+            db.commit()
+            return result
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(409, 'Traspaso duplicado o inventario modificado simultáneamente')
+        except Exception:
+            db.rollback()
+            raise
 
 @app.post('/api/sales', status_code=201)
 def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=100), user: User = Depends(identity)):
