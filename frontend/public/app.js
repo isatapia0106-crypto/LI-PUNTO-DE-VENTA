@@ -1,10 +1,10 @@
 const $ = id => document.getElementById(id);
 const pesos = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(n);
-let products = [], cart = new Map(), cash = {open:false}, pendingKey = null;
+let products = [], cart = new Map(), cash = {open:false}, pendingKey = null, token = null, role = null;
 const branchId = () => Number($('branch').value);
 const notice = message => { $('notice').textContent = message; };
 async function request(url, options={}) {
-  const response = await fetch(url, {headers:{'Content-Type':'application/json'},...options});
+  const response = await fetch(url, {...options, headers:{'Content-Type':'application/json',...(token?{'Authorization':`Bearer ${token}`}:{}) ,...options.headers}});
   if (!response.ok) {const error=await response.json().catch(()=>({}));throw Error(error.detail || 'Error de conexión');}
   return response.json();
 }
@@ -13,10 +13,9 @@ async function refresh(){
   drawProducts();
   const sales = await request(`/api/sales?branch_id=${branchId()}`);
   cash = await request(`/api/cash/current?branch_id=${branchId()}`);
-  const summary = await request(`/api/reports/summary?branch_id=${branchId()}`);
-  $('summary').textContent = `${summary.sales_count} ventas · ${pesos(summary.total)} total · Efectivo ${pesos(summary.by_method.cash)}`;
+  if (role !== 'cajero') { const summary = await request(`/api/reports/summary?branch_id=${branchId()}`); $('summary').textContent = `${summary.sales_count} ventas · ${pesos(summary.total)} total · Efectivo ${pesos(summary.by_method.cash)}`; } else $('summary').textContent = 'Resumen disponible para supervisión';
   $('cashStatus').textContent = cash.open ? `Caja #${cash.id} abierta · Esperado ${pesos(cash.expected)}` : 'Caja cerrada';
-  $('openControls').hidden = cash.open; $('closeControls').hidden = !cash.open; drawCart();
+  $('openControls').hidden = cash.open || !['admin_general','admin_sucursal','cajero'].includes(role); $('closeControls').hidden = !cash.open || !['admin_general','admin_sucursal','cajero'].includes(role); $('withdrawCash').hidden = !['admin_general','admin_sucursal'].includes(role); drawCart();
   $('sales').replaceChildren(...sales.map(s => {
     const row=document.createElement('div');row.className='sale';
     const label=document.createElement('span');label.textContent=`Venta #${s.id} · ${new Date(s.created_at).toLocaleString('es-MX')}`;
@@ -54,4 +53,7 @@ $('branch').onchange=()=>{cart.clear();pendingKey=null;refresh().catch(err=>noti
 $('openCash').onclick=async()=>{try{await request('/api/cash/open',{method:'POST',body:JSON.stringify({branch_id:branchId(),opening:$('opening').value})});await refresh();notice('Caja abierta');}catch(err){notice(err.message);}};
 $('withdrawCash').onclick=async()=>{try{const result=await request(`/api/cash/${cash.id}/withdraw`,{method:'POST',body:JSON.stringify({amount:$('withdrawAmount').value,reason:$('withdrawReason').value})});$('withdrawAmount').value='';$('withdrawReason').value='';await refresh();notice(`Retiro registrado: ${pesos(result.amount)}`);}catch(err){notice(err.message);}};
 $('closeCash').onclick=async()=>{if(!confirm('¿Cerrar esta caja y registrar el efectivo contado?'))return;try{const result=await request(`/api/cash/${cash.id}/close`,{method:'POST',body:JSON.stringify({counted:$('counted').value})});await refresh();notice(`Corte registrado. Diferencia: ${pesos(result.difference)}`);}catch(err){notice(err.message);}};
-request('/api/branches').then(list=>{for(const b of list){const opt=document.createElement('option');opt.value=b.id;opt.textContent=b.name;$('branch').append(opt);}return refresh();}).catch(err=>notice(err.message));
+async function start(){ $('branch').replaceChildren(); const list=await request('/api/branches'); for(const b of list){const opt=document.createElement('option');opt.value=b.id;opt.textContent=b.name;$('branch').append(opt);} $('new').hidden = !['admin_general','admin_sucursal'].includes(role); if(list.length)await refresh();else notice('No tienes sucursales asignadas'); }
+$('loginForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{const result=await request('/api/auth/login',{method:'POST',body:JSON.stringify({username:f.get('username'),password:f.get('password')})});token=result.access_token;role=result.role;$('who').textContent=f.get('username');$('logout').hidden=false;$('loginDialog').close();if(!['admin_general','admin_sucursal','cajero'].includes(role)){notice('Tu rol no usa esta pantalla de caja. Los módulos de tu área están en desarrollo.');return;}await start();}catch(err){$('loginError').textContent=err.message;}};
+$('logout').onclick=()=>{token=null;role=null;cart.clear();products=[];$('products').replaceChildren();$('sales').replaceChildren();$('who').textContent='Sin sesión';$('logout').hidden=true;$('loginForm').reset();$('loginDialog').showModal();};
+$('loginDialog').showModal();

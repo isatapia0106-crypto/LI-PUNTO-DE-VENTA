@@ -4,4 +4,6 @@ COPY backend/requirements.txt /srv/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend /srv/backend
 COPY frontend /srv/frontend
+COPY scripts /srv/scripts
+COPY alembic.ini /srv/alembic.ini
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

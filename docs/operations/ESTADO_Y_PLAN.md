@@ -11,8 +11,8 @@
 
 ## Pendiente antes de producción
 
-1. **Seguridad:** usuarios, contraseña, sesión/JWT, roles, autorizaciones por empresa/sucursal/caja y auditoría de actor real. Las cabeceras de demo son manipulables y producción está bloqueada.
-2. **Base de datos:** Alembic y migración del esquema previo; restricciones y pruebas de concurrencia en PostgreSQL. SQLite sirve solo como demo.
+1. **Seguridad:** login JWT, hash Argon2, roles y asignación de sucursales implementados. Pendiente: revocación, protección contra intentos repetidos, HTTPS, revisión integral y permisos por caja/turno.
+2. **Base de datos:** migración inicial Alembic y actualización de la segunda demo SQLite implementadas. Pendientes: migración de la primera demo y pruebas de concurrencia en PostgreSQL.
 3. **Caja:** varias cajas y cajeros por sucursal, entradas de efectivo, autorización y comprobante de retiros, conciliación de pagos externos.
 4. **Venta:** folios y series, descuentos autorizados, productos con distintos impuestos, ticket impreso y crédito si se aprueba.
 5. **Operación:** clientes, proveedores, compras, devoluciones, traspasos, conteos y reportes detallados.
@@ -21,10 +21,9 @@
 
 ## Orden técnico siguiente
 
-- Autenticación y permisos reales, ligados a sucursal.
-- Migraciones y modelos separados por dominio; prueba en PostgreSQL.
+- Endurecer autenticación, migraciones y pruebas en PostgreSQL; separar modelos por dominio.
 - Folios/tickets e inventario por movimiento; más operaciones de caja.
 - Clientes y compras, luego devoluciones/traspasos.
 - PAC/Clip, operación offline y piloto controlado.
 
-**Límite actual:** se registra una sola caja abierta por sucursal; no hay permisos de usuario ni cobro real. No usar para ventas reales.
+**Límite actual:** se registra una sola caja abierta por sucursal; hay permisos básicos de usuario, pero no control por turno ni cobro real. No usar para ventas reales.
