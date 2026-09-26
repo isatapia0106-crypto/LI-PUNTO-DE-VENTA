@@ -471,6 +471,26 @@ def sales(branch_id: int, user: User = Depends(identity)):
         rows = db.scalars(select(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id).order_by(Sale.id.desc()).limit(30)).all()
         return [{'id': s.id, 'total': str(s.total), 'created_at': s.created_at.isoformat(), 'payment_method': s.payment_method} for s in rows]
 
+@app.get('/api/sales/{sale_id}')
+def sale_detail(sale_id: int, user: User = Depends(identity)):
+    require_any(user, 'sale', 'report')
+    with Session(engine) as db:
+        sale = db.scalar(select(Sale).where(Sale.id == sale_id, Sale.empresa_id == user.empresa_id))
+        if sale is None:
+            raise HTTPException(404, 'Venta no encontrada')
+        branch = branch_for(db, user, sale.branch_id)
+        return {
+            'id': sale.id, 'branch_id': branch.id, 'branch_name': branch.name,
+            'created_at': sale.created_at.isoformat(), 'payment_method': sale.payment_method,
+            'subtotal': str(sale.subtotal), 'tax': str(sale.tax), 'total': str(sale.total),
+            'paid': str(sale.paid), 'change': str(money(sale.paid - sale.total)),
+            'items': [
+                {'product_id': item.product_id, 'name': item.name, 'quantity': item.quantity,
+                 'unit_price': str(item.unit_price), 'line_total': str(money(item.unit_price * item.quantity))}
+                for item in sale.items
+            ],
+        }
+
 @app.get('/api/reports/summary')
 def summary(branch_id: int, user: User = Depends(identity)):
     require(user, 'report')
