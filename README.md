@@ -21,6 +21,10 @@ Se conserva el árbol ya creado en GitHub: `backend/app/api`, `core`, `db`, `ser
 
 Demo: seis sucursales configuradas para la empresa de prueba 1, usuarios con contraseña Argon2 y sesión JWT, precios antes de IVA 16%, sin procesamiento real de pagos. En producción faltan revocación y límites de intentos de inicio de sesión, pruebas de concurrencia PostgreSQL, folios fiscales, caja por cajero, facturación CFDI/PAC, Clip y modo offline con sincronización. La clave de reintento actual solo cubre ventas en línea. Las rutas de operación exigen autenticación y permisos; aún no está autorizada para ventas reales. Consulta `docs/operations/SEGURIDAD_Y_MIGRACIONES.md`.
 
+## Ticket de venta
+
+Después de confirmar una venta, la pantalla muestra un comprobante con sucursal, productos, impuestos, total, pago y cambio. También puedes abrir el ticket desde el historial, imprimirlo o preparar un mensaje de WhatsApp; el envío requiere una acción manual. `GET /api/sales/{id}` devuelve el detalle solo a usuarios autorizados para esa sucursal. Este comprobante no es una factura CFDI.
+
 ## Pruebas
 
 `python -m pytest -q tests` desde raíz. Cada venta descuenta existencias y crea log dentro de la misma transacción. PostgreSQL usa bloqueos de fila para cobros simultáneos. No se confirman ventas con stock insuficiente ni pagos insuficientes.
