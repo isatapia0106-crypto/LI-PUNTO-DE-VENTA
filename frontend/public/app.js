@@ -19,9 +19,26 @@ async function refresh(){
   $('sales').replaceChildren(...sales.map(s => {
     const row=document.createElement('div');row.className='sale';
     const label=document.createElement('span');label.textContent=`Venta #${s.id} · ${new Date(s.created_at).toLocaleString('es-MX')}`;
-    const total=document.createElement('b');total.textContent=pesos(s.total);row.append(label,total);return row;
+    const total=document.createElement('b');total.textContent=pesos(s.total);
+    const ticket=document.createElement('button');ticket.textContent='Ticket';ticket.onclick=()=>showReceipt(s.id).catch(err=>notice(err.message));
+    row.append(label,total,ticket);return row;
   }));
 }
+let receiptText = '';
+async function showReceipt(id){
+  const sale=await request(`/api/sales/${id}`);
+  const lines=[`LI PUNTO DE VENTA`,sale.branch_name,`Venta #${sale.id}`,new Date(sale.created_at).toLocaleString('es-MX'),'',
+    ...sale.items.map(item=>`${item.quantity} × ${item.name} — ${pesos(item.line_total)}`),'',
+    `Subtotal: ${pesos(sale.subtotal)}`,`IVA: ${pesos(sale.tax)}`,`Total: ${pesos(sale.total)}`,
+    `Forma de pago: ${{cash:'Efectivo',card:'Tarjeta',transfer:'Transferencia'}[sale.payment_method] || sale.payment_method}`,
+    `Recibido: ${pesos(sale.paid)}`,`Cambio: ${pesos(sale.change)}`,'','Comprobante de venta. No es factura CFDI.'];
+  receiptText=lines.join('\n');
+  $('receiptContent').textContent=receiptText;
+  $('receiptDialog').showModal();
+}
+$('printReceipt').onclick=()=>window.print();
+$('shareReceipt').onclick=()=>window.open(`https://wa.me/?text=${encodeURIComponent(receiptText)}`,'_blank','noopener,noreferrer');
+$('closeReceipt').onclick=()=>$('receiptDialog').close();
 function drawProducts(){
   const q=$('search').value.trim().toLowerCase();
   $('products').replaceChildren(...products.filter(p=>p.name.toLowerCase().includes(q)||p.sku.toLowerCase().includes(q)).map(p=>{
@@ -48,7 +65,7 @@ $('search').oninput=drawProducts;
 $('search').onkeydown=e=>{if(e.key==='Enter'){const sku=products.find(p=>p.sku.toLowerCase()===$('search').value.trim().toLowerCase());if(sku){if((cart.get(sku.id)||0)<sku.stock){cart.set(sku.id,(cart.get(sku.id)||0)+1);drawCart();}$('search').value='';drawProducts();}}};
 $('new').onclick=()=>$('dialog').showModal();
 $('form').onsubmit=async e=>{if(e.submitter?.value!=='save')return;e.preventDefault();const f=new FormData(e.currentTarget);try{await request('/api/products',{method:'POST',body:JSON.stringify({sku:f.get('sku'),name:f.get('name'),price:f.get('price'),stock:Number(f.get('stock')),branch_id:branchId()})});$('dialog').close();$('form').reset();await refresh();notice('Producto agregado');}catch(err){notice(err.message);$('dialog').close();}};
-$('charge').onclick=async()=>{if(!cart.size)return;const subtotal=[...cart].reduce((s,[id,q])=>s+Number(products.find(p=>p.id===id).price)*q,0);const total=Math.round((subtotal+Math.round(subtotal*16)/100)*100)/100;const method=$('method').value;const paid=Number($('paid').value);if(!Number.isFinite(paid)||paid<total){notice(`Pago insuficiente. Total: ${pesos(total)}`);return;}if(method!=='cash'&&paid!==total){notice('Tarjeta o transferencia debe coincidir con el total');return;}if(!confirm(`Confirmar venta por ${pesos(total)}?`))return;try{const s=await request('/api/sales',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':pendingKey ??= crypto.randomUUID()},body:JSON.stringify({branch_id:branchId(),items:[...cart].map(([product_id,quantity])=>({product_id,quantity})),payment_method:method,paid})});pendingKey=null;cart.clear();$('paid').value='';await refresh();drawCart();notice(`Venta #${s.id} registrada. Cambio: ${pesos(s.change)}`);}catch(err){notice(err.message);}};
+$('charge').onclick=async()=>{if(!cart.size)return;const subtotal=[...cart].reduce((s,[id,q])=>s+Number(products.find(p=>p.id===id).price)*q,0);const total=Math.round((subtotal+Math.round(subtotal*16)/100)*100)/100;const method=$('method').value;const paid=Number($('paid').value);if(!Number.isFinite(paid)||paid<total){notice(`Pago insuficiente. Total: ${pesos(total)}`);return;}if(method!=='cash'&&paid!==total){notice('Tarjeta o transferencia debe coincidir con el total');return;}if(!confirm(`Confirmar venta por ${pesos(total)}?`))return;try{const s=await request('/api/sales',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':pendingKey ??= crypto.randomUUID()},body:JSON.stringify({branch_id:branchId(),items:[...cart].map(([product_id,quantity])=>({product_id,quantity})),payment_method:method,paid})});pendingKey=null;cart.clear();$('paid').value='';await refresh();drawCart();notice(`Venta #${s.id} registrada. Cambio: ${pesos(s.change)}`);await showReceipt(s.id);}catch(err){notice(err.message);}};
 $('branch').onchange=()=>{cart.clear();pendingKey=null;refresh().catch(err=>notice(err.message));};
 $('openCash').onclick=async()=>{try{await request('/api/cash/open',{method:'POST',body:JSON.stringify({branch_id:branchId(),opening:$('opening').value})});await refresh();notice('Caja abierta');}catch(err){notice(err.message);}};
 $('withdrawCash').onclick=async()=>{try{const result=await request(`/api/cash/${cash.id}/withdraw`,{method:'POST',body:JSON.stringify({amount:$('withdrawAmount').value,reason:$('withdrawReason').value})});$('withdrawAmount').value='';$('withdrawReason').value='';await refresh();notice(`Retiro registrado: ${pesos(result.amount)}`);}catch(err){notice(err.message);}};
