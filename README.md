@@ -25,6 +25,10 @@ Demo: seis sucursales configuradas para la empresa de prueba 1, usuarios con con
 
 Después de confirmar una venta, la pantalla muestra un comprobante con sucursal, productos, impuestos, total, pago y cambio. También puedes abrir el ticket desde el historial, imprimirlo o preparar un mensaje de WhatsApp; el envío requiere una acción manual. `GET /api/sales/{id}` devuelve el detalle solo a usuarios autorizados para esa sucursal. Este comprobante no es una factura CFDI.
 
+## Traspasos entre sucursales
+
+Un administrador puede enviar inventario a otra sucursal asignada desde la pantalla. `POST /api/stock/transfers` exige permiso de inventario, acceso a ambas sucursales y una cabecera `Idempotency-Key` de 8 a 100 caracteres. Descuenta origen, suma destino y registra salida, entrada y auditoría en una sola transacción. Repetir la misma solicitud con la misma clave devuelve el traspaso existente; cambiar los datos con esa clave produce un conflicto. Para una base con Alembic, ejecuta `alembic upgrade head` antes de iniciar la nueva versión. La interfaz todavía no muestra un listado específico de traspasos; los movimientos pueden consultarse en `/api/stock/movements`.
+
 ## Pruebas
 
 `python -m pytest -q tests` desde raíz. Cada venta descuenta existencias y crea log dentro de la misma transacción. PostgreSQL usa bloqueos de fila para cobros simultáneos. No se confirman ventas con stock insuficiente ni pagos insuficientes.
