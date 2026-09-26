@@ -107,3 +107,36 @@ def test_sale_receipt_respects_branch_assignment():
     assert client.get(url, headers=ADMIN).json()['total'] == '11.60'
     assert client.get(url, headers=CASHIER).status_code == 403
     assert client.get(url, headers=OUTSIDER).status_code == 404
+
+def test_stock_transfer_is_atomic_scoped_and_idempotent():
+    created = client.post('/api/products', headers=ADMIN, json={
+        'sku':'TRANSFER-01','name':'Traspasable','price':'20.00','branch_id':1,'stock':5})
+    assert created.status_code == 201, created.text
+    product_id = created.json()['id']
+    data = {'source_branch_id':1,'target_branch_id':2,'product_id':product_id,'quantity':3}
+    headers = {**ADMIN, 'Idempotency-Key':'transfer-unique-001'}
+    assert client.post('/api/stock/transfers', headers={**CASHIER,'Idempotency-Key':'transfer-cashier-001'}, json=data).status_code == 403
+    warehouse = client.post('/api/users', headers=ADMIN, json={
+        'username':'warehouse-transfer','password':'warehouse-password-123','role':'almacenista','branch_ids':[1]})
+    assert warehouse.status_code == 201, warehouse.text
+    restricted = auth('warehouse-transfer','warehouse-password-123')
+    assert client.post('/api/stock/transfers', headers={**restricted,'Idempotency-Key':'transfer-warehouse-001'}, json=data).status_code == 403
+    assert client.post('/api/stock/transfers', headers={**OUTSIDER,'Idempotency-Key':'transfer-outsider-001'}, json=data).status_code == 404
+    assert client.post('/api/stock/transfers', headers=headers, json={**data,'target_branch_id':1}).status_code == 422
+    transfer = client.post('/api/stock/transfers', headers=headers, json=data)
+    assert transfer.status_code == 201, transfer.text
+    assert transfer.json()['replayed'] is False
+    again = client.post('/api/stock/transfers', headers=headers, json=data)
+    assert again.status_code == 201 and again.json()['replayed'] is True
+    assert client.post('/api/stock/transfers', headers=headers, json={**data,'quantity':1}).status_code == 409
+    source = next(x for x in client.get('/api/products?branch_id=1', headers=ADMIN).json() if x['id']==product_id)
+    target = next(x for x in client.get('/api/products?branch_id=2', headers=ADMIN).json() if x['id']==product_id)
+    assert (source['stock'], target['stock']) == (2, 3)
+    ref = transfer.json()['id']
+    outgoing = client.get('/api/stock/movements?branch_id=1', headers=ADMIN).json()
+    incoming = client.get('/api/stock/movements?branch_id=2', headers=ADMIN).json()
+    assert any(x['reason']=='transfer_out' and x['change']==-3 and x['reference_id']==ref for x in outgoing)
+    assert any(x['reason']=='transfer_in' and x['change']==3 and x['reference_id']==ref for x in incoming)
+    insufficient = client.post('/api/stock/transfers', headers={**ADMIN,'Idempotency-Key':'transfer-unique-002'}, json=data)
+    assert insufficient.status_code == 409
+    assert next(x for x in client.get('/api/products?branch_id=2', headers=ADMIN).json() if x['id']==product_id)['stock'] == 3
