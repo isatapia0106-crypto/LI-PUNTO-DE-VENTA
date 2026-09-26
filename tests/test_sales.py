@@ -58,6 +58,13 @@ def test_branch_cash_sale_and_stock_ledger():
     sale = client.post('/api/sales', json=payload, headers={**CASHIER,**key})
     assert sale.status_code == 201, sale.text
     assert sale.json()['total'] == '232.00' and sale.json()['change'] == '18.00'
+    detail = client.get(f"/api/sales/{sale.json()['id']}", headers=CASHIER)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()['branch_name'] == 'Zamora'
+    assert detail.json()['items'][0]['line_total'] == '200.00'
+    assert detail.json()['change'] == '18.00'
+    assert client.get(f"/api/sales/{sale.json()['id']}", headers=OUTSIDER).status_code == 404
+    assert client.get('/api/sales/999999', headers=CASHIER).status_code == 404
     replay = client.post('/api/sales', json=payload, headers={**CASHIER,**key})
     assert replay.status_code == 201 and replay.json()['replayed']
     assert client.post('/api/sales', json={**payload,'paid':'233.00'}, headers={**CASHIER,**key}).status_code == 409
@@ -86,3 +93,17 @@ def test_stock_adjustments_are_scoped_and_traced():
     assert client.post(f'/api/products/{product}/stock',headers=CASHIER,json={'branch_id':2,'change':1,'reason':'fraude'}).status_code == 403
     assert client.post(f'/api/products/{product}/stock',headers=OUTSIDER,json={'branch_id':2,'change':1,'reason':'fraude'}).status_code == 404
     assert client.get('/api/stock/movements?branch_id=2',headers=ADMIN).json()[0]['reason'] == 'recepción'
+
+def test_sale_receipt_respects_branch_assignment():
+    created = client.post('/api/products', headers=ADMIN, json={'sku':'TICKET-02','name':'Producto ticket','price':'10.00','branch_id':2,'stock':1})
+    assert created.status_code == 201, created.text
+    opened = client.post('/api/cash/open', headers=ADMIN, json={'branch_id':2,'opening':'0'})
+    assert opened.status_code == 201, opened.text
+    sale = client.post('/api/sales', headers={**ADMIN,'Idempotency-Key':'ticket-branch-02'}, json={
+        'branch_id':2,'items':[{'product_id':created.json()['id'],'quantity':1}],
+        'payment_method':'cash','paid':'11.60'})
+    assert sale.status_code == 201, sale.text
+    url = f"/api/sales/{sale.json()['id']}"
+    assert client.get(url, headers=ADMIN).json()['total'] == '11.60'
+    assert client.get(url, headers=CASHIER).status_code == 403
+    assert client.get(url, headers=OUTSIDER).status_code == 404
