@@ -17,7 +17,7 @@ Abrir http://localhost:8000. Por defecto usa SQLite local en `pos.db`. Para Post
 
 ## Módulos y alcance
 
-Se conserva el árbol ya creado en GitHub: `backend/app/api`, `core`, `db`, `services`, `integrations`; `frontend/public` y `frontend/src/features`; `desktop`, `database`, `infrastructure`, `docs`, `scripts` y `tests`. Se reservan carpetas para ventas, caja, inventario, productos, clientes, proveedores, compras, devoluciones, traspasos, cotizaciones, facturación, reportes, usuarios, auditoría, configuración, Clip y sucursales. **Actualmente funcionan catálogo, existencias por sucursal, kardex básico, apertura/cierre de caja, retiro, venta con clave de reintento, historial, resumen y registro de auditoría.** Los demás módulos siguen pendientes.
+Se conserva el árbol ya creado en GitHub: `backend/app/api`, `core`, `db`, `services`, `integrations`; `frontend/public` y `frontend/src/features`; `desktop`, `database`, `infrastructure`, `docs`, `scripts` y `tests`. Se reservan carpetas para ventas, caja, inventario, productos, clientes, proveedores, compras, devoluciones, traspasos, cotizaciones, facturación, reportes, usuarios, auditoría, configuración, Clip y sucursales. **Actualmente funcionan catálogo, existencias por sucursal, kardex básico, traspasos, apertura/cierre de caja, retiro, venta con clave de reintento, ticket no fiscal, historial, resumen y registro de auditoría.** Los demás módulos siguen pendientes.
 
 Demo: seis sucursales configuradas para la empresa de prueba 1, usuarios con contraseña Argon2 y sesión JWT, precios antes de IVA 16%, sin procesamiento real de pagos. En producción faltan revocación y límites de intentos de inicio de sesión, pruebas de concurrencia PostgreSQL, folios fiscales, caja por cajero, facturación CFDI/PAC, Clip y modo offline con sincronización. La clave de reintento actual solo cubre ventas en línea. Las rutas de operación exigen autenticación y permisos; aún no está autorizada para ventas reales. Consulta `docs/operations/SEGURIDAD_Y_MIGRACIONES.md`.
 
@@ -38,3 +38,5 @@ Un administrador puede enviar inventario a otra sucursal asignada desde la panta
 El esquema cambió. Si tienes un `pos.db` de la demo anterior, **consérvalo** y sigue `docs/operations/SEGURIDAD_Y_MIGRACIONES.md` para migrarlo con respaldo. Alembic instala el esquema nuevo, pero no convierte automáticamente una demo antigua.
 
 Consulta `docs/operations/ESTADO_Y_PLAN.md` para el alcance real y los siguientes módulos.
+
+Los requerimientos priorizados, criterios de aceptación y decisiones pendientes están en `docs/requirements/REQUERIMIENTOS_LI_POS.md`.
