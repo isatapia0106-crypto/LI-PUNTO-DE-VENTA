@@ -140,3 +140,38 @@ def test_stock_transfer_is_atomic_scoped_and_idempotent():
     insufficient = client.post('/api/stock/transfers', headers={**ADMIN,'Idempotency-Key':'transfer-unique-002'}, json=data)
     assert insufficient.status_code == 409
     assert next(x for x in client.get('/api/products?branch_id=2', headers=ADMIN).json() if x['id']==product_id)['stock'] == 3
+
+def test_customer_isolation_search_and_sale_link():
+    assert client.get('/api/customers?branch_id=1').status_code == 401
+    assert client.post('/api/customers', headers=ADMIN, json={
+        'branch_id':1,'name':'   ','phone':''}).status_code == 422
+    customer = client.post('/api/customers', headers=ADMIN, json={
+        'branch_id':1,'name':'María Cliente','phone':'4431234567'})
+    assert customer.status_code == 201, customer.text
+    customer_id = customer.json()['id']
+    assert any(x['id']==customer_id for x in client.get('/api/customers?branch_id=1&q=443', headers=CASHIER).json())
+    assert client.get('/api/customers?branch_id=1', headers=OUTSIDER).status_code == 404
+    assert client.post('/api/customers', headers=CASHIER, json={
+        'branch_id':2,'name':'Sin permiso'}).status_code == 403
+
+    other_branch = client.get('/api/branches', headers=OUTSIDER).json()[0]['id']
+    other = client.post('/api/customers', headers=OUTSIDER, json={
+        'branch_id':other_branch,'name':'Cliente ajeno'})
+    assert other.status_code == 201
+    assert all(x['id']!=other.json()['id'] for x in client.get('/api/customers?branch_id=1', headers=ADMIN).json())
+
+    product = client.post('/api/products', headers=ADMIN, json={
+        'sku':'CUSTOMER-01','name':'Producto cliente','price':'10','branch_id':3,'stock':2})
+    assert product.status_code == 201
+    assert client.post('/api/cash/open', headers=ADMIN, json={'branch_id':3,'opening':'0'}).status_code == 201
+    payload = {'branch_id':3,'customer_id':customer_id,'items':[{'product_id':product.json()['id'],'quantity':1}],
+               'payment_method':'cash','paid':'11.60'}
+    key = {**ADMIN,'Idempotency-Key':'customer-sale-001'}
+    assert client.post('/api/sales', headers={**ADMIN,'Idempotency-Key':'customer-sale-bad'},
+                       json={**payload,'customer_id':other.json()['id']}).status_code == 404
+    sold = client.post('/api/sales', headers=key, json=payload)
+    assert sold.status_code == 201, sold.text
+    detail = client.get(f"/api/sales/{sold.json()['id']}", headers=ADMIN).json()
+    assert detail['customer_id'] == customer_id and detail['customer_name'] == 'María Cliente'
+    assert client.post('/api/sales', headers=key, json={**payload,'customer_id':None}).status_code == 409
+    assert client.post('/api/sales', headers=key, json=payload).json()['replayed'] is True
