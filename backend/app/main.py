@@ -12,7 +12,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, ForeignKey, String, Integer, Numeric, DateTime, select, UniqueConstraint, inspect
+from sqlalchemy import create_engine, ForeignKey, String, Integer, Numeric, DateTime, select, UniqueConstraint, inspect, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 
@@ -98,6 +98,14 @@ class Product(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     __table_args__ = (UniqueConstraint('empresa_id', 'sku'),)
 
+class Customer(Base):
+    __tablename__ = 'customers'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
 class Stock(Base):
     __tablename__ = 'stock'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -111,6 +119,7 @@ class Sale(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     empresa_id: Mapped[int] = mapped_column(Integer, index=True)
     branch_id: Mapped[int] = mapped_column(Integer)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey('customers.id'), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     tax: Mapped[Decimal] = mapped_column(Numeric(12, 2))
@@ -147,6 +156,7 @@ class Line(BaseModel):
 
 class SaleIn(BaseModel):
     branch_id: int = Field(gt=0)
+    customer_id: int | None = Field(default=None, gt=0)
     items: list[Line] = Field(min_length=1)
     payment_method: str
     paid: Decimal = Field(ge=0)
@@ -157,6 +167,11 @@ class ProductIn(BaseModel):
     price: Decimal = Field(gt=0)
     branch_id: int = Field(gt=0)
     stock: int = Field(ge=0)
+
+class CustomerIn(BaseModel):
+    branch_id: int = Field(gt=0)
+    name: str = Field(min_length=2, max_length=160)
+    phone: str | None = Field(default=None, max_length=30)
 
 class OpenCash(BaseModel):
     branch_id: int = Field(gt=0)
@@ -200,12 +215,12 @@ if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(48)  # Transient local key; restarts invalidate sessions.
 
 ROLE_ACTIONS = {
-    'admin_general': {'sale', 'catalog_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
-    'admin_sucursal': {'sale', 'catalog_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
-    'cajero': {'sale', 'cash_open', 'cash_close'},
+    'admin_general': {'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
+    'admin_sucursal': {'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
+    'cajero': {'sale', 'customer_read', 'customer_write', 'cash_open', 'cash_close'},
     'almacenista': {'stock_write'},
     'supervisor_inventarios': {'stock_write', 'report'},
-    'contabilidad': {'report'},
+    'contabilidad': {'report', 'customer_read'},
     'repartidor': set(),
     'auditoria': {'report'},
 }
@@ -394,6 +409,36 @@ def products(branch_id: int, user: User = Depends(identity)):
         rows = db.execute(select(Product, Stock).join(Stock).where(Product.empresa_id == empresa, Stock.branch_id == branch_id).order_by(Product.name)).all()
         return [{'id': p.id, 'sku': p.sku, 'name': p.name, 'price': str(p.price), 'stock': s.quantity} for p, s in rows]
 
+@app.post('/api/customers', status_code=201)
+def create_customer(data: CustomerIn, user: User = Depends(identity)):
+    require(user, 'customer_write')
+    name = data.name.strip()
+    phone = data.phone.strip() if data.phone else None
+    if len(name) < 2:
+        raise HTTPException(422, 'Nombre inválido')
+    with Session(engine) as db:
+        branch_for(db, user, data.branch_id)
+        customer = Customer(empresa_id=user.empresa_id, name=name, phone=phone or None)
+        db.add(customer)
+        db.flush()
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=data.branch_id,
+                     action='customer_created', record_id=customer.id, actor_id=user.id))
+        result = {'id': customer.id, 'name': customer.name, 'phone': customer.phone}
+        db.commit()
+        return result
+
+@app.get('/api/customers')
+def customers(branch_id: int, q: str = '', user: User = Depends(identity)):
+    require(user, 'customer_read')
+    with Session(engine) as db:
+        branch_for(db, user, branch_id)
+        query = select(Customer).where(Customer.empresa_id == user.empresa_id)
+        if q.strip():
+            term = f'%{q.strip()[:80]}%'
+            query = query.where(or_(Customer.name.ilike(term), Customer.phone.ilike(term)))
+        rows = db.scalars(query.order_by(Customer.id.desc()).limit(50)).all()
+        return [{'id': x.id, 'name': x.name, 'phone': x.phone} for x in rows]
+
 @app.post('/api/products/{product_id}/stock')
 def adjust_stock(product_id: int, data: AdjustStock, user: User = Depends(identity)):
     require(user, 'stock_write')
@@ -498,11 +543,15 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
     with Session(engine) as db:
         try:
             branch_for(db, user, data.branch_id)
+            if data.customer_id is not None and not db.scalar(select(Customer.id).where(
+                    Customer.id == data.customer_id, Customer.empresa_id == empresa)):
+                raise HTTPException(404, 'Cliente fuera de esta empresa o inexistente')
             existing = db.scalar(select(Sale).where(Sale.empresa_id == empresa, Sale.request_key == idempotency_key))
             if existing:
                 previous = sorted((x.product_id, x.quantity) for x in existing.items)
                 incoming = sorted((x.product_id, x.quantity) for x in data.items)
-                if (existing.branch_id != data.branch_id or existing.payment_method != data.payment_method
+                if (existing.branch_id != data.branch_id or existing.customer_id != data.customer_id
+                        or existing.payment_method != data.payment_method
                         or existing.paid != money(data.paid) or previous != incoming):
                     raise HTTPException(409, 'Clave de venta ya utilizada para otra operación')
                 return {'id': existing.id, 'subtotal': str(existing.subtotal), 'tax': str(existing.tax), 'total': str(existing.total), 'change': str(money(existing.paid - existing.total)), 'replayed': True}
@@ -531,7 +580,7 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
                 raise HTTPException(422, 'Pago insuficiente')
             if data.payment_method != 'cash' and money(data.paid) != total:
                 raise HTTPException(422, 'El pago debe coincidir con el total')
-            sale = Sale(empresa_id=empresa, branch_id=data.branch_id, cash_session_id=cash.id, request_key=idempotency_key, subtotal=subtotal, tax=tax, total=total, payment_method=data.payment_method, paid=money(data.paid), items=sale_lines)
+            sale = Sale(empresa_id=empresa, branch_id=data.branch_id, customer_id=data.customer_id, cash_session_id=cash.id, request_key=idempotency_key, subtotal=subtotal, tax=tax, total=total, payment_method=data.payment_method, paid=money(data.paid), items=sale_lines)
             db.add(sale)
             db.flush()
             for item in data.items:
@@ -561,8 +610,10 @@ def sale_detail(sale_id: int, user: User = Depends(identity)):
         if sale is None:
             raise HTTPException(404, 'Venta no encontrada')
         branch = branch_for(db, user, sale.branch_id)
+        customer = db.get(Customer, sale.customer_id) if sale.customer_id else None
         return {
             'id': sale.id, 'branch_id': branch.id, 'branch_name': branch.name,
+            'customer_id': sale.customer_id, 'customer_name': customer.name if customer else None,
             'created_at': sale.created_at.isoformat(), 'payment_method': sale.payment_method,
             'subtotal': str(sale.subtotal), 'tax': str(sale.tax), 'total': str(sale.total),
             'paid': str(sale.paid), 'change': str(money(sale.paid - sale.total)),
