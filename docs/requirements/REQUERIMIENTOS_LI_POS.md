@@ -24,7 +24,7 @@ Este documento define el alcance del sistema LI. Los estados describen lo que ex
 | VEN-02 | P0 | Asignar folio/serie únicos por emisor y sucursal, conservar detalle histórico y permitir reimpresión de ticket sin alterar la venta. | Parcial: ID y ticket imprimible; faltan folio y serie de negocio. |
 | CAJ-01 | P0 | Abrir turno por caja/cajero, registrar fondo, ventas, entradas/retiros autorizados y cerrar con importe esperado, contado y diferencia. | Parcial: una caja por sucursal, apertura, retiro y cierre; faltan múltiples cajas, cajero y autorización. |
 | AUD-01 | P0 | Registrar acciones críticas con usuario, empresa, sucursal, fecha, entidad e identificador; permitir consulta autorizada. | Parcial: bitácora básica; faltan consulta y cobertura completa. |
-| CLI-01 | P1 | Crear clientes, identificar datos de contacto y fiscales, consultar historial y vincular ventas. | Pendiente. |
+| CLI-01 | P1 | Crear clientes, identificar datos de contacto y fiscales, consultar historial y vincular ventas. | Parcial: alta, búsqueda y vínculo con venta; faltan edición, datos fiscales, historial y consentimiento. |
 | CRE-01 | P1 | Si se aprueba venta a crédito: límite, plazo, saldo, abonos, vencimientos y bloqueo por excedente; conciliar con caja. | Pendiente de decisión de negocio. |
 | COM-01 | P1 | Registrar proveedores, órdenes, recepción parcial, costos y actualización de inventario con trazabilidad. | Pendiente. |
 | DEV-01 | P1 | Devolver o cancelar mediante autorización, referencia a venta original, ajuste de stock y dinero; si aplica, nota de crédito fiscal. | Pendiente. |
