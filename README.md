@@ -29,6 +29,10 @@ Después de confirmar una venta, la pantalla muestra un comprobante con sucursal
 
 Un administrador puede enviar inventario a otra sucursal asignada desde la pantalla. `POST /api/stock/transfers` exige permiso de inventario, acceso a ambas sucursales y una cabecera `Idempotency-Key` de 8 a 100 caracteres. Descuenta origen, suma destino y registra salida, entrada y auditoría en una sola transacción. Repetir la misma solicitud con la misma clave devuelve el traspaso existente; cambiar los datos con esa clave produce un conflicto. Para una base con Alembic, ejecuta `alembic upgrade head` antes de iniciar la nueva versión. La interfaz todavía no muestra un listado específico de traspasos; los movimientos pueden consultarse en `/api/stock/movements`.
 
+## Clientes
+
+Se pueden registrar clientes con nombre y teléfono opcional, buscarlos dentro de la empresa y asociarlos a una venta desde la pantalla de caja. El ticket muestra el nombre cuando existe un cliente. Las rutas `POST /api/customers` y `GET /api/customers` requieren sesión y acceso a la sucursal indicada. Los datos fiscales, edición y consentimiento para comunicaciones siguen pendientes. Antes de iniciar una base existente con Alembic, ejecuta `alembic upgrade head` para añadir `customers` y la relación opcional en ventas.
+
 ## Pruebas
 
 `python -m pytest -q tests` desde raíz. Cada venta descuenta existencias y crea log dentro de la misma transacción. PostgreSQL usa bloqueos de fila para cobros simultáneos. No se confirman ventas con stock insuficiente ni pagos insuficientes.
