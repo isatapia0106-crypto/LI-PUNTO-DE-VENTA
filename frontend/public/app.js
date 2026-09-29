@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const pesos = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(n);
-let products = [], cart = new Map(), cash = {open:false}, pendingKey = null, pendingTransferKey = null, token = null, role = null, branches = [];
+let products = [], cart = new Map(), cash = {open:false}, pendingKey = null, pendingTransferKey = null, token = null, role = null, branches = [], customersList = [];
 const branchId = () => Number($('branch').value);
 const notice = message => { $('notice').textContent = message; };
 async function request(url, options={}) {
@@ -9,13 +9,18 @@ async function request(url, options={}) {
   return response.json();
 }
 async function loadCustomers(selected=''){
+  const previous=$('customer').value;
   const query=encodeURIComponent($('customerSearch').value.trim());
   const rows=await request(`/api/customers?branch_id=${branchId()}&q=${query}`);
+  customersList=rows;
   $('customer').replaceChildren();
   const publicOption=document.createElement('option');publicOption.value='';publicOption.textContent='Público general';$('customer').append(publicOption);
   for(const customer of rows){const option=document.createElement('option');option.value=customer.id;option.textContent=customer.name+(customer.phone?` · ${customer.phone}`:'');$('customer').append(option);}
   $('customer').value=String(selected);
   if($('customer').selectedIndex<0)$('customer').value='';
+  if(previous!==$('customer').value){pendingKey=null;$('customerHistory').replaceChildren();}
+  $('editCustomer').disabled=!$('customer').value;
+  $('customerHistoryButton').disabled=!$('customer').value;
 }
 async function refresh(){
   products = await request(`/api/products?branch_id=${branchId()}`);
@@ -74,9 +79,11 @@ function drawCart(){
   const tax=Math.round(subtotal*16)/100; $('subtotal').textContent=pesos(subtotal);$('tax').textContent=pesos(tax);$('total').textContent=pesos(subtotal+tax);
   $('charge').disabled=cart.size===0 || !cash.open;
 }
-$('customer').onchange=()=>{pendingKey=null;};
+$('customer').onchange=()=>{pendingKey=null;$('editCustomer').disabled=!$('customer').value;$('customerHistoryButton').disabled=!$('customer').value;$('customerHistory').replaceChildren();};
 $('customerSearch').oninput=()=>{loadCustomers().catch(err=>notice(err.message));};
 $('newCustomer').onclick=async()=>{const name=prompt('Nombre del cliente');if(name===null)return;const phone=prompt('Teléfono (opcional)') ?? '';try{const created=await request('/api/customers',{method:'POST',body:JSON.stringify({branch_id:branchId(),name,phone})});$('customerSearch').value=created.name;await loadCustomers(created.id);pendingKey=null;notice('Cliente registrado');}catch(err){notice(err.message);}};
+$('editCustomer').onclick=async()=>{const selected=customersList.find(c=>c.id===Number($('customer').value));if(!selected)return;const name=prompt('Nombre del cliente',selected.name);if(name===null)return;const phone=prompt('Teléfono (opcional)',selected.phone||'');if(phone===null)return;try{const updated=await request(`/api/customers/${selected.id}`,{method:'PUT',body:JSON.stringify({branch_id:branchId(),name,phone})});$('customerSearch').value=updated.name;await loadCustomers(updated.id);notice('Cliente actualizado');}catch(err){notice(err.message);}};
+$('customerHistoryButton').onclick=async()=>{const id=Number($('customer').value);if(!id)return;try{const sales=await request(`/api/customers/${id}/sales?branch_id=${branchId()}`);const rows=sales.map(s=>{const item=document.createElement('div');item.className='sale';item.textContent=`#${s.id} · ${new Date(s.created_at).toLocaleString('es-MX')} · ${pesos(s.total)}`;return item;});$('customerHistory').replaceChildren(...rows);if(!rows.length)$('customerHistory').textContent='Sin compras en esta sucursal';}catch(err){notice(err.message);}};
 $('search').oninput=drawProducts;
 $('search').onkeydown=e=>{if(e.key==='Enter'){const sku=products.find(p=>p.sku.toLowerCase()===$('search').value.trim().toLowerCase());if(sku){if((cart.get(sku.id)||0)<sku.stock){cart.set(sku.id,(cart.get(sku.id)||0)+1);drawCart();}$('search').value='';drawProducts();}}};
 $('new').onclick=()=>$('dialog').showModal();
