@@ -31,7 +31,7 @@ Un administrador puede enviar inventario a otra sucursal asignada desde la panta
 
 ## Clientes
 
-Se pueden registrar clientes con nombre y teléfono opcional, buscarlos dentro de la empresa y asociarlos a una venta desde la pantalla de caja. El ticket muestra el nombre cuando existe un cliente. Las rutas `POST /api/customers` y `GET /api/customers` requieren sesión y acceso a la sucursal indicada. Los datos fiscales, edición y consentimiento para comunicaciones siguen pendientes. Antes de iniciar una base existente con Alembic, ejecuta `alembic upgrade head` para añadir `customers` y la relación opcional en ventas.
+Se pueden registrar, buscar y editar clientes con nombre y teléfono opcional, y asociarlos a una venta desde la pantalla de caja. El historial muestra compras de ese cliente en la sucursal autorizada; el ticket conserva el nombre que tenía cuando se cobró. Las rutas de clientes requieren sesión y permisos. Los datos fiscales y el consentimiento para comunicaciones siguen pendientes. Antes de iniciar una base existente con Alembic, ejecuta `alembic upgrade head` para añadir el nombre histórico a ventas.
 
 ## Pruebas
 
