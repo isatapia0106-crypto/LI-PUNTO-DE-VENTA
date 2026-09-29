@@ -4,6 +4,17 @@ Base funcional de POS inspirada en los módulos y el stack documentados para TPN
 
 ## Probar sin Docker
 
+### Windows: abrir con doble clic
+
+1. Descarga el repositorio completo como ZIP desde GitHub y extráelo, o clónalo con Git.
+2. Instala Python 3.12 con la opción **Add python.exe to PATH**.
+3. Haz doble clic en `INICIAR_LI_POS.bat` desde la carpeta extraída. La primera vez instalará dependencias y te pedirá crear un usuario administrador (empresa de demo: `1`).
+4. Al terminar, se abrirá `http://127.0.0.1:8000` en tu navegador. Conserva tus credenciales; no están incluidas en el repositorio.
+
+El lanzador usa SQLite y no requiere Docker. Si ya existe un `pos.db` de una versión anterior, **no lo borra ni lo migra automáticamente**: muestra una indicación para revisar `docs/operations/SEGURIDAD_Y_MIGRACIONES.md`. La primera instalación necesita conexión a internet para descargar las dependencias de Python.
+
+### Consola
+
 ```bash
 cd LI-PUNTO-DE-VENTA
 python -m venv .venv
