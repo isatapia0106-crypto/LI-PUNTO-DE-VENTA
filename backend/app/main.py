@@ -120,6 +120,7 @@ class Sale(Base):
     empresa_id: Mapped[int] = mapped_column(Integer, index=True)
     branch_id: Mapped[int] = mapped_column(Integer)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey('customers.id'), nullable=True)
+    customer_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     tax: Mapped[Decimal] = mapped_column(Numeric(12, 2))
@@ -172,6 +173,9 @@ class CustomerIn(BaseModel):
     branch_id: int = Field(gt=0)
     name: str = Field(min_length=2, max_length=160)
     phone: str | None = Field(default=None, max_length=30)
+
+class CustomerUpdate(CustomerIn):
+    pass
 
 class OpenCash(BaseModel):
     branch_id: int = Field(gt=0)
@@ -439,6 +443,40 @@ def customers(branch_id: int, q: str = '', user: User = Depends(identity)):
         rows = db.scalars(query.order_by(Customer.id.desc()).limit(50)).all()
         return [{'id': x.id, 'name': x.name, 'phone': x.phone} for x in rows]
 
+@app.put('/api/customers/{customer_id}')
+def update_customer(customer_id: int, data: CustomerUpdate, user: User = Depends(identity)):
+    require(user, 'customer_write')
+    name = data.name.strip()
+    if len(name) < 2:
+        raise HTTPException(422, 'Nombre inválido')
+    with Session(engine) as db:
+        branch_for(db, user, data.branch_id)
+        customer = db.scalar(select(Customer).where(Customer.id == customer_id,
+                                                   Customer.empresa_id == user.empresa_id))
+        if customer is None:
+            raise HTTPException(404, 'Cliente no encontrado')
+        customer.name = name
+        customer.phone = (data.phone or '').strip() or None
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=data.branch_id,
+                     action='customer_updated', record_id=customer.id, actor_id=user.id))
+        result = {'id': customer.id, 'name': customer.name, 'phone': customer.phone}
+        db.commit()
+        return result
+
+@app.get('/api/customers/{customer_id}/sales')
+def customer_sales(customer_id: int, branch_id: int, user: User = Depends(identity)):
+    require(user, 'customer_read')
+    with Session(engine) as db:
+        branch_for(db, user, branch_id)
+        if not db.scalar(select(Customer.id).where(Customer.id == customer_id,
+                                                  Customer.empresa_id == user.empresa_id)):
+            raise HTTPException(404, 'Cliente no encontrado')
+        rows = db.scalars(select(Sale).where(Sale.customer_id == customer_id,
+                          Sale.empresa_id == user.empresa_id, Sale.branch_id == branch_id)
+                          .order_by(Sale.id.desc()).limit(50)).all()
+        return [{'id': s.id, 'created_at': s.created_at.isoformat(), 'total': str(s.total),
+                 'payment_method': s.payment_method} for s in rows]
+
 @app.post('/api/products/{product_id}/stock')
 def adjust_stock(product_id: int, data: AdjustStock, user: User = Depends(identity)):
     require(user, 'stock_write')
@@ -543,8 +581,9 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
     with Session(engine) as db:
         try:
             branch_for(db, user, data.branch_id)
-            if data.customer_id is not None and not db.scalar(select(Customer.id).where(
-                    Customer.id == data.customer_id, Customer.empresa_id == empresa)):
+            customer = db.scalar(select(Customer).where(Customer.id == data.customer_id,
+                Customer.empresa_id == empresa)) if data.customer_id is not None else None
+            if data.customer_id is not None and customer is None:
                 raise HTTPException(404, 'Cliente fuera de esta empresa o inexistente')
             existing = db.scalar(select(Sale).where(Sale.empresa_id == empresa, Sale.request_key == idempotency_key))
             if existing:
@@ -580,7 +619,10 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
                 raise HTTPException(422, 'Pago insuficiente')
             if data.payment_method != 'cash' and money(data.paid) != total:
                 raise HTTPException(422, 'El pago debe coincidir con el total')
-            sale = Sale(empresa_id=empresa, branch_id=data.branch_id, customer_id=data.customer_id, cash_session_id=cash.id, request_key=idempotency_key, subtotal=subtotal, tax=tax, total=total, payment_method=data.payment_method, paid=money(data.paid), items=sale_lines)
+            sale = Sale(empresa_id=empresa, branch_id=data.branch_id, customer_id=data.customer_id,
+                        customer_name=customer.name if customer else None, cash_session_id=cash.id,
+                        request_key=idempotency_key, subtotal=subtotal, tax=tax, total=total,
+                        payment_method=data.payment_method, paid=money(data.paid), items=sale_lines)
             db.add(sale)
             db.flush()
             for item in data.items:
@@ -613,7 +655,7 @@ def sale_detail(sale_id: int, user: User = Depends(identity)):
         customer = db.get(Customer, sale.customer_id) if sale.customer_id else None
         return {
             'id': sale.id, 'branch_id': branch.id, 'branch_name': branch.name,
-            'customer_id': sale.customer_id, 'customer_name': customer.name if customer else None,
+            'customer_id': sale.customer_id, 'customer_name': sale.customer_name or (customer.name if customer else None),
             'created_at': sale.created_at.isoformat(), 'payment_method': sale.payment_method,
             'subtotal': str(sale.subtotal), 'tax': str(sale.tax), 'total': str(sale.total),
             'paid': str(sale.paid), 'change': str(money(sale.paid - sale.total)),
