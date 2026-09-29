@@ -175,3 +175,18 @@ def test_customer_isolation_search_and_sale_link():
     assert detail['customer_id'] == customer_id and detail['customer_name'] == 'María Cliente'
     assert client.post('/api/sales', headers=key, json={**payload,'customer_id':None}).status_code == 409
     assert client.post('/api/sales', headers=key, json=payload).json()['replayed'] is True
+    history_url = f'/api/customers/{customer_id}/sales?branch_id=3'
+    assert [x['id'] for x in client.get(history_url, headers=ADMIN).json()] == [sold.json()['id']]
+    assert client.get(history_url, headers=CASHIER).status_code == 403
+    assert client.get(history_url, headers=OUTSIDER).status_code == 404
+    assert client.get(f'/api/customers/{customer_id}/sales?branch_id=1', headers=ADMIN).json() == []
+
+    changed = client.put(f'/api/customers/{customer_id}', headers=CASHIER, json={
+        'branch_id':1,'name':'María Actualizada','phone':'4439998888'})
+    assert changed.status_code == 200, changed.text
+    assert changed.json()['name'] == 'María Actualizada'
+    assert client.get(f"/api/sales/{sold.json()['id']}", headers=ADMIN).json()['customer_name'] == 'María Cliente'
+    assert client.put(f'/api/customers/{customer_id}', headers=OUTSIDER, json={
+        'branch_id':other_branch,'name':'Intento ajeno'}).status_code == 404
+    assert client.put(f'/api/customers/{customer_id}', headers=CASHIER, json={
+        'branch_id':2,'name':'Sin sucursal'}).status_code == 403
