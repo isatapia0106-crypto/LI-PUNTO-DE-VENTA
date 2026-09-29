@@ -10,7 +10,7 @@
 - Pruebas de flujo para aislamiento básico, pago insuficiente, stock insuficiente, reintento, retiro y cierre.
 - Ticket de venta consultable, imprimible y compartible manualmente por WhatsApp; aún no es CFDI.
 - Traspasos atómicos entre sucursales autorizadas, con movimientos de salida/entrada y clave de reintento.
-- Alta y búsqueda de clientes por empresa y vínculo opcional con venta/ticket.
+- Alta, búsqueda y edición de clientes por empresa, historial de compras por sucursal y vínculo opcional con venta/ticket.
 
 ## Pendiente antes de producción
 
@@ -18,7 +18,7 @@
 2. **Base de datos:** migración inicial Alembic y actualización de la segunda demo SQLite implementadas. Pendientes: migración de la primera demo y pruebas de concurrencia en PostgreSQL.
 3. **Caja:** varias cajas y cajeros por sucursal, entradas de efectivo, autorización y comprobante de retiros, conciliación de pagos externos.
 4. **Venta:** folios y series, descuentos autorizados, productos con distintos impuestos y crédito si se aprueba; el ticket actual es un comprobante no fiscal.
-5. **Operación:** completar edición, datos fiscales e historial de clientes; proveedores, compras, devoluciones, conteos, listado de traspasos y reportes detallados.
+5. **Operación:** completar datos fiscales y consentimiento de clientes; proveedores, compras, devoluciones, conteos, listado de traspasos y reportes detallados.
 6. **Integraciones:** CFDI/PAC, Clip, flujo de cliente para WhatsApp y hardware, después de definir credenciales y conciliación.
 7. **Resiliencia:** cola offline duradera, sincronización, conflictos, respaldo/restauración y monitoreo.
 
