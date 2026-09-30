@@ -11,7 +11,7 @@ Base funcional de POS inspirada en los módulos y el stack documentados para TPN
 3. Haz doble clic en `INICIAR_LI_POS.bat` desde la carpeta extraída. La primera vez instalará dependencias y te pedirá crear un usuario administrador (empresa de demo: `1`).
 4. Al terminar, se abrirá `http://127.0.0.1:8000` en tu navegador. Conserva tus credenciales; no están incluidas en el repositorio.
 
-El lanzador usa SQLite y no requiere Docker. Si ya existe un `pos.db` de una versión anterior, **no lo borra ni lo migra automáticamente**: muestra una indicación para revisar `docs/operations/SEGURIDAD_Y_MIGRACIONES.md`. La primera instalación necesita conexión a internet para descargar las dependencias de Python.
+El lanzador usa SQLite y no requiere Docker. Si ya existe un `pos.db` de una versión anterior, **lo respalda y migra si reconoce su versión**; para bases antiguas no reconocidas, consulta `docs/operations/SEGURIDAD_Y_MIGRACIONES.md`. La primera instalación necesita conexión a internet para descargar las dependencias de Python.
 
 ### Consola
 
@@ -28,9 +28,9 @@ Abrir http://localhost:8000. Por defecto usa SQLite local en `pos.db`. Para Post
 
 ## Módulos y alcance
 
-Se conserva el árbol ya creado en GitHub: `backend/app/api`, `core`, `db`, `services`, `integrations`; `frontend/public` y `frontend/src/features`; `desktop`, `database`, `infrastructure`, `docs`, `scripts` y `tests`. Se reservan carpetas para ventas, caja, inventario, productos, clientes, proveedores, compras, devoluciones, traspasos, cotizaciones, facturación, reportes, usuarios, auditoría, configuración, Clip y sucursales. **Actualmente funcionan catálogo, existencias por sucursal, kardex básico, traspasos, apertura/cierre de caja, retiro, venta con clave de reintento, ticket no fiscal, historial, resumen y registro de auditoría.** Los demás módulos siguen pendientes.
+Se conserva el árbol ya creado en GitHub: `backend/app/api`, `core`, `db`, `services`, `integrations`; `frontend/public` y `frontend/src/features`; `desktop`, `database`, `infrastructure`, `docs`, `scripts` y `tests`. Se reservan carpetas para ventas, caja, inventario, productos, clientes, proveedores, compras, devoluciones, traspasos, cotizaciones, facturación, reportes, usuarios, auditoría, configuración, Clip y sucursales. **Actualmente funcionan catálogo editable con código de barras e impuestos, existencias y costo promedio por sucursal, kardex, traspasos, conteos físicos, cajas y turnos por cajero, entradas/retiros autorizados, ventas y descuentos autorizados, tickets con folio, clientes, proveedores, órdenes y recepciones parciales, historial, resumen y bitácora.** Los demás módulos siguen pendientes.
 
-Demo: seis sucursales configuradas para la empresa de prueba 1, usuarios con contraseña Argon2 y sesión JWT, precios antes de IVA 16%, sin procesamiento real de pagos. En producción faltan revocación y límites de intentos de inicio de sesión, pruebas de concurrencia PostgreSQL, folios fiscales, caja por cajero, facturación CFDI/PAC, Clip y modo offline con sincronización. La clave de reintento actual solo cubre ventas en línea. Las rutas de operación exigen autenticación y permisos; aún no está autorizada para ventas reales. Consulta `docs/operations/SEGURIDAD_Y_MIGRACIONES.md`.
+Demo: seis sucursales configuradas para la empresa de prueba 1, usuarios con contraseña Argon2 y sesión JWT, impuestos configurables por producto, sin procesamiento real de pagos. En producción faltan revocación y límites de intentos de inicio de sesión, pruebas de concurrencia PostgreSQL, folios fiscales, facturación CFDI/PAC, Clip y modo offline con sincronización. La clave de reintento actual solo cubre ventas en línea. Las rutas de operación exigen autenticación y permisos; aún no está autorizada para ventas reales. Consulta `docs/operations/SEGURIDAD_Y_MIGRACIONES.md`.
 
 ## Ticket de venta
 
@@ -55,3 +55,12 @@ El esquema cambió. Si tienes un `pos.db` de la demo anterior, **consérvalo** y
 Consulta `docs/operations/ESTADO_Y_PLAN.md` para el alcance real y los siguientes módulos.
 
 Los requerimientos priorizados, criterios de aceptación y decisiones pendientes están en `docs/requirements/REQUERIMIENTOS_LI_POS.md`.
+
+## Productos, cajas y compras
+
+- **Productos y ventas:** agregar/editar SKU, código de barras, unidad (cantidad entera), impuesto y precio con/sin impuesto. El carrito obtiene los totales desde la API. Descuentos porcentuales requieren motivo y autorización de administración; el ticket conserva precios e impuestos históricos y un folio no fiscal.
+- **Cajas y turnos:** seleccionar/crear caja, abrir un turno a nombre del usuario, registrar entradas/retiros como administrador y cerrar con diferencia. Cada cajero vende únicamente en su propio turno. Los comprobantes de movimiento y corte se imprimen desde el historial.
+- **Proveedores y compras:** registrar/editar proveedor, guardar una orden con varias partidas y recibir cantidades parciales. Solo la recepción aumenta inventario, recalcula el costo promedio por sucursal y registra al receptor. La clave de reintento evita duplicados.
+- **Inventario:** consultar stock/costo/kardex, traspasar y conciliar conteos físicos con motivo. Si las existencias cambian desde que se cargó el conteo, se exige actualizar y volver a contar.
+
+Consulta `docs/operations/SEGURIDAD_Y_MIGRACIONES.md` antes de actualizar una instalación con datos. Todavía faltan cantidades fraccionarias, precios por sucursal, descuentos por partida, cancelación de órdenes, cuentas por pagar, valoración de costo desconocido, CFDI, Clip y la validación del piloto con PostgreSQL/hardware real.

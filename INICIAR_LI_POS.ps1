@@ -32,6 +32,11 @@ try {
         Remove-Item Env:JWT_SECRET
     }
 
+    if (-not $newDatabase) {
+        & $python scripts/migrate_local.py
+        if ($LASTEXITCODE -ne 0) { throw 'No se completó la migración. Conserva el respaldo indicado.' }
+    }
+
     $userCount = & $python scripts/check_local_db.py
     if ($LASTEXITCODE -ne 0) { throw 'Conserva pos.db y sigue docs/operations/SEGURIDAD_Y_MIGRACIONES.md antes de continuar.' }
     if ([int]$userCount -eq 0) {
@@ -59,3 +64,4 @@ try {
     Read-Host 'Presiona Enter para cerrar'
     exit 1
 }
+

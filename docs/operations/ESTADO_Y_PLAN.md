@@ -1,34 +1,31 @@
 # Estado de implementación · LI Punto de Venta
 
-## Completado en la demo
+Actualizado el 30 de septiembre de 2026. Funciones verificadas en la demo local; falta aceptación operativa del piloto.
 
-- Seis sucursales de muestra asociadas a empresa 1; selección de sucursal en pantalla.
-- Productos y stock separados por sucursal; movimientos de alta, ajuste y venta consultables.
-- Apertura de caja, retiro de efectivo con motivo, corte con diferencia y bloqueo de ventas con caja cerrada.
-- Venta con comprobación de stock, total e IVA de demostración; clave de reintento para no duplicar la misma venta.
-- Resumen de ventas por sucursal y forma de pago; historial de últimas ventas y bitácora básica.
-- Pruebas de flujo para aislamiento básico, pago insuficiente, stock insuficiente, reintento, retiro y cierre.
-- Ticket de venta consultable, imprimible y compartible manualmente por WhatsApp; aún no es CFDI.
-- Traspasos atómicos entre sucursales autorizadas, con movimientos de salida/entrada y clave de reintento.
-- Alta, búsqueda y edición de clientes por empresa, historial de compras por sucursal y vínculo opcional con venta/ticket.
+## Implementado
 
-## Pendiente antes de producción
+- Seis sucursales demo, usuarios, roles y permisos por sucursal/empresa.
+- Productos editables: SKU, código de barras único por empresa, unidad de venta entera, activo/inactivo, precio e impuesto configurable (incluido, separado o exento).
+- Ventas atómicas, totales calculados por línea en la API, descuentos porcentuales con motivo y autorización de administración, folio único de ticket no fiscal y reimpresión con datos históricos.
+- Cajas físicas múltiples, un turno activo por caja y por cajero/sucursal, cobro exclusivo en turno propio, entradas y retiros registrados por administración, comprobantes, cortes e historial.
+- Clientes: alta, búsqueda, edición, historial y vínculo con venta.
+- Proveedores: alta/edición; órdenes con varias partidas, recepción parcial/completa, historial de recepción y costo promedio por producto/sucursal. Crear una orden no modifica stock.
+- Inventario: kardex con actor/fecha, ajuste, traspaso que conserva costo de origen y conteo físico conciliado. El conteo verifica la existencia esperada para evitar sobrescribir movimientos recientes.
+- Migración Alembic `f2b3409ac871`, actualización local con respaldo automático y comprobación de preservación de ventas/stock. El lanzador Windows migra las versiones reconocidas antes de iniciar.
 
-1. **Seguridad:** login JWT, hash Argon2, roles y asignación de sucursales implementados. Pendiente: revocación, protección contra intentos repetidos, HTTPS, revisión integral y permisos por caja/turno.
-2. **Base de datos:** migración inicial Alembic y actualización de la segunda demo SQLite implementadas. Pendientes: migración de la primera demo y pruebas de concurrencia en PostgreSQL.
-3. **Caja:** varias cajas y cajeros por sucursal, entradas de efectivo, autorización y comprobante de retiros, conciliación de pagos externos.
-4. **Venta:** folios y series, descuentos autorizados, productos con distintos impuestos y crédito si se aprueba; el ticket actual es un comprobante no fiscal.
-5. **Operación:** completar datos fiscales y consentimiento de clientes; proveedores, compras, devoluciones, conteos, listado de traspasos y reportes detallados.
-6. **Integraciones:** CFDI/PAC, Clip, flujo de cliente para WhatsApp y hardware, después de definir credenciales y conciliación.
-7. **Resiliencia:** cola offline duradera, sincronización, conflictos, respaldo/restauración y monitoreo.
+## Pendiente
 
-## Orden técnico siguiente
+1. Seguridad: revocación, límite de intentos, administración completa de usuarios, HTTPS y auditoría de seguridad.
+2. Empresas: razones sociales, datos fiscales y configuración por empresa/sucursal.
+3. Productos/ventas: cantidades fraccionarias, precios por sucursal, vigencias, descuentos por partida, series fiscales y crédito si se aprueba.
+4. Caja: solicitud y aprobación separadas de movimientos, pagos integrados y conciliación externa. Administración puede cerrar un turno ajeno; el cierre registra quién lo realizó.
+5. Compras/inventario: cancelación de órdenes, impuestos de compra, cuentas por pagar, conteos masivos y valoración de inventario que no tenía costo registrado.
+6. Operación: devoluciones/cancelaciones de ventas, datos fiscales de clientes, consentimiento y reportes/exportaciones completos.
+7. Integraciones: PAC/CFDI, Clip, impresora/lector/cajón y operación offline si se aprueba.
+8. Infraestructura: pruebas de concurrencia PostgreSQL, respaldo/restauración de producción, monitoreo y piloto con datos de cada sucursal.
 
-- Endurecer autenticación, migraciones y pruebas en PostgreSQL; separar modelos por dominio.
-- Folios y series fiscales, reglas de impuestos y más operaciones de caja.
-- Completar clientes y compras, luego devoluciones y conteos; completar la consulta de traspasos.
-- PAC/Clip, operación offline y piloto controlado.
+## Verificación de esta entrega
 
-**Límite actual:** se registra una sola caja abierta por sucursal; hay permisos básicos de usuario, pero no control por turno ni cobro real. No usar para ventas reales.
+Pruebas de API: aislamiento, autorización de descuentos, impuestos mixtos/precio incluido/exento, histórico de ticket, cajas por cajero, movimientos y reintentos, compras parciales, costo promedio, recepción atómica, conteos y cobros simultáneos SQLite. Prueba de migración/restauración con venta y stock antiguos. La interfaz pasó comprobación de sintaxis JavaScript; falta prueba visual en un navegador con el servidor accesible.
 
-Los criterios de aceptación y decisiones de negocio están en `docs/requirements/REQUERIMIENTOS_LI_POS.md`.
+El ticket no es CFDI; tarjeta/transferencia son registros manuales y no confirman un pago externo. El piloto de operación real sigue pendiente.

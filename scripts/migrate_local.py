@@ -1,0 +1,61 @@
+"""Back up and migrate the recognized local SQLite installation, without importing demo bootstrap."""
+import argparse
+import os
+import secrets
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root))
+
+def migrate(path):
+    path = path.resolve()
+    if not path.is_file():
+        raise SystemExit('No existe la base local. Inicia la aplicación para crear una nueva.')
+    os.environ['APP_ENV'] = 'production'
+    os.environ.setdefault('JWT_SECRET', secrets.token_urlsafe(48))
+    os.environ['DATABASE_URL'] = f'sqlite:///{path.as_posix()}'
+    from alembic import command
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    cfg = Config(str(root / 'alembic.ini'))
+    cfg.set_main_option('script_location', str(root / 'backend/alembic'))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    with sqlite3.connect(path) as db:
+        names = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'alembic_version' in names:
+            versions = [x[0] for x in db.execute('SELECT version_num FROM alembic_version')]
+            if len(versions) != 1:
+                raise SystemExit('La versión de la base no es válida. No se modificó.')
+            version = versions[0]
+            if version == head:
+                print('Base local actualizada.')
+                return
+            if version not in {r.revision for r in ScriptDirectory.from_config(cfg).walk_revisions()}:
+                raise SystemExit('Versión desconocida. No se modificó la base.')
+        else:
+            required = {'branches', 'users', 'user_branches', 'products', 'stock', 'sales', 'sale_items',
+                        'cash_sessions', 'cash_movements', 'stock_movements', 'stock_transfers', 'customers', 'audit_logs'}
+            if not required <= names or 'customer_name' not in {x[1] for x in db.execute('PRAGMA table_info(sales)')}:
+                raise SystemExit('Demo antigua no reconocida: consulta SEGURIDAD_Y_MIGRACIONES.md. No se modificó la base.')
+            version = None
+        if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+            raise SystemExit('La base tiene errores de integridad. No se modificó.')
+        backup = path.with_name(path.name + '.backup-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))
+        with sqlite3.connect(backup) as target:
+            db.backup(target)
+    print(f'Respaldo: {backup}')
+    if version is None:
+        command.stamp(cfg, 'e1a59c0d35f4')
+    command.upgrade(cfg, 'head')
+    with sqlite3.connect(path) as db:
+        if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+            raise SystemExit(f'Revisa la integridad después de migrar. Conserva el respaldo {backup}.')
+    print('Migración terminada. Las ventas y existencias se conservaron.')
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('database', type=Path, nargs='?', default=root / 'pos.db')
+    migrate(parser.parse_args().database)

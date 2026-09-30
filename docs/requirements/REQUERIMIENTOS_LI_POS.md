@@ -1,6 +1,6 @@
 # Requerimientos · LI Punto de Venta
 
-**Versión:** 0.1 · **Estado:** base para revisión operativa · **Fecha:** 28 de septiembre de 2026
+**Versión:** 0.2 · **Estado:** base para revisión operativa · **Fecha:** 30 de septiembre de 2026
 
 Este documento define el alcance del sistema LI. Los estados describen lo que existe en el repositorio, no una aprobación para usarlo en ventas reales. La arquitectura toma como referencia los módulos conocidos de TPN; no replica su código privado.
 
@@ -9,7 +9,7 @@ Este documento define el alcance del sistema LI. Los estados describen lo que ex
 - Operación prevista en seis sucursales: Zamora, Zacapu, Uruapan, 20 de Noviembre, Maravatío y CDMX.
 - Cada sucursal pertenece a una empresa y se asocia a una razón social para facturación. **La asignación de las dos razones sociales sigue pendiente de confirmación.** No emitir CFDI hasta definir RFC, régimen, serie, CSD y PAC de cada emisor.
 - Toda venta, movimiento de inventario, caja y consulta debe conservar empresa, sucursal, usuario y fecha. Un usuario no puede operar otra empresa ni sucursal no asignada.
-- Precios, impuestos, descuentos, folios, crédito y métodos de pago se configurarán mediante reglas por empresa/sucursal. El IVA fijo de 16 % que hoy calcula la demo no representa todos los casos fiscales.
+- Precios, impuestos, descuentos, folios, crédito y métodos de pago se configurarán mediante reglas por empresa/sucursal. Los productos nuevos usan 16 % como valor inicial editable; las tasas configuradas necesitan validación fiscal del negocio.
 - Las operaciones que cambian dinero o existencias deben ser atómicas y resistentes a reintentos.
 
 ## 2. Funciones y criterios de aceptación
@@ -18,15 +18,15 @@ Este documento define el alcance del sistema LI. Los estados describen lo que ex
 | --- | --- | --- | --- |
 | SUC-01 | P0 | Registrar empresas, razones sociales y sucursales; impedir acceso cruzado y asignar usuarios a sucursales. | Parcial: seis sucursales demo, empresa y permisos; faltan razones sociales y administración. |
 | SEG-01 | P0 | Iniciar sesión con contraseña protegida, roles y permisos en la API; bloquear cuentas inactivas y registrar actor. | Parcial: JWT, Argon2 y roles; faltan revocación, límites de intentos y revisión de seguridad. |
-| CAT-01 | P0 | Crear y consultar productos por SKU, con precio y existencia por sucursal; definir unidad, código de barras, impuestos y vigencia. | Parcial: SKU, nombre, precio y stock; faltan atributos, precios e impuestos configurables. |
-| INV-01 | P0 | Registrar entradas, salidas, ajustes y traspasos con motivo, usuario y referencia; no permitir existencias negativas; consultar kardex. | Parcial: alta, ajuste, venta y traspaso atómico; faltan compras, conteos y conciliación. |
-| VEN-01 | P0 | Capturar carrito, calcular importes por línea, impuestos y total, cobrar y descontar stock una sola vez; rechazar stock y pago insuficientes. | Parcial: flujo demo con efectivo, tarjeta y transferencia manual; faltan reglas fiscales y pagos integrados. |
-| VEN-02 | P0 | Asignar folio/serie únicos por emisor y sucursal, conservar detalle histórico y permitir reimpresión de ticket sin alterar la venta. | Parcial: ID y ticket imprimible; faltan folio y serie de negocio. |
-| CAJ-01 | P0 | Abrir turno por caja/cajero, registrar fondo, ventas, entradas/retiros autorizados y cerrar con importe esperado, contado y diferencia. | Parcial: una caja por sucursal, apertura, retiro y cierre; faltan múltiples cajas, cajero y autorización. |
+| CAT-01 | P0 | Crear y consultar productos por SKU, con precio y existencia por sucursal; definir unidad, código de barras, impuestos y vigencia. | Implementado para prueba: SKU, código de barras, unidad entera, edición/activación, precio e impuesto por producto (incluido, separado o exento). Pendientes: precios por sucursal y vigencias por fecha. |
+| INV-01 | P0 | Registrar entradas, salidas, ajustes y traspasos con motivo, usuario y referencia; no permitir existencias negativas; consultar kardex. | Implementado para prueba: alta, ajuste, venta, traspaso, recepción de compras y conteo físico conciliado con verificación de existencias y bitácora. Falta validación operativa en PostgreSQL y conteos masivos. |
+| VEN-01 | P0 | Capturar carrito, calcular importes por línea, impuestos y total, cobrar y descontar stock una sola vez; rechazar stock y pago insuficientes. | Parcial: impuestos por producto y descuentos con autorización de administración; efectivo, tarjeta y transferencia manual. Faltan validación fiscal e integración de pagos. |
+| VEN-02 | P0 | Asignar folio/serie únicos por emisor y sucursal, conservar detalle histórico y permitir reimpresión de ticket sin alterar la venta. | Implementado folio único de ticket LI-B<sucursal>-<ID global>, historial y reimpresión. La serie es de ticket no fiscal; faltan series por emisor para CFDI. |
+| CAJ-01 | P0 | Abrir turno por caja/cajero, registrar fondo, ventas, entradas/retiros autorizados y cerrar con importe esperado, contado y diferencia. | Implementado para prueba: múltiples cajas, turnos por cajero, entradas/retiros exclusivos de administración, comprobantes e historial de cortes. Pendiente: aprobación separada solicitante/autorizador y conciliación con pagos externos. |
 | AUD-01 | P0 | Registrar acciones críticas con usuario, empresa, sucursal, fecha, entidad e identificador; permitir consulta autorizada. | Parcial: bitácora básica; faltan consulta y cobertura completa. |
 | CLI-01 | P1 | Crear clientes, identificar datos de contacto y fiscales, consultar historial y vincular ventas. | Parcial: alta, búsqueda, edición, historial por sucursal y vínculo con venta; faltan datos fiscales y consentimiento. |
 | CRE-01 | P1 | Si se aprueba venta a crédito: límite, plazo, saldo, abonos, vencimientos y bloqueo por excedente; conciliar con caja. | Pendiente de decisión de negocio. |
-| COM-01 | P1 | Registrar proveedores, órdenes, recepción parcial, costos y actualización de inventario con trazabilidad. | Pendiente. |
+| COM-01 | P1 | Registrar proveedores, órdenes, recepción parcial, costos y actualización de inventario con trazabilidad. | Implementado para prueba: alta/edición de proveedores, órdenes, recepciones parciales, costo promedio por sucursal y bitácora. Faltan cancelación de órdenes, impuestos de compra y cuentas por pagar. |
 | DEV-01 | P1 | Devolver o cancelar mediante autorización, referencia a venta original, ajuste de stock y dinero; si aplica, nota de crédito fiscal. | Pendiente. |
 | REP-01 | P1 | Mostrar ventas, utilidad estimada, inventario, cortes, retiros y diferencias por fecha, sucursal, empresa y forma de pago; exportar. | Parcial: resumen básico por sucursal y método. |
 | FIS-01 | P1 | Emitir CFDI 4.0 con PAC elegido, estados de timbrado, reintentos, cancelación y conciliación con venta; resguardar CSD. | Pendiente; depende de datos fiscales y PAC. |

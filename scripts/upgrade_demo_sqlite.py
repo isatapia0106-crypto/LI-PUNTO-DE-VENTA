@@ -36,14 +36,17 @@ os.environ.setdefault('JWT_SECRET', secrets.token_urlsafe(48))
 os.environ['DATABASE_URL'] = f'sqlite:///{source}'
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from backend.app.main import Base, engine
+from backend.app.main import User, UserBranch, engine
 from sqlalchemy import inspect, text
 
 with engine.begin() as db:
     if 'actor_id' not in {c['name'] for c in inspect(db).get_columns('audit_logs')}:
         db.execute(text('ALTER TABLE audit_logs ADD COLUMN actor_id INTEGER'))
-Base.metadata.create_all(engine)
+# Create only the tables of the revision being stamped; later revisions create their own tables.
+User.__table__.create(engine, checkfirst=True)
+UserBranch.__table__.create(engine, checkfirst=True)
 with engine.begin() as db:
     db.execute(text('CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)'))
     db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('77f0a8ca18aa')"))
 print(f'Migración de demo terminada. Respaldo: {backup}')
+

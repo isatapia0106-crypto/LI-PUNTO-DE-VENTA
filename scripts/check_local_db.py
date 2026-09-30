@@ -12,7 +12,14 @@ required = {
     'users': {'id', 'password_hash', 'role'},
     'branches': {'id', 'empresa_id'},
     'customers': {'id', 'empresa_id'},
-    'sales': {'id', 'customer_id', 'customer_name', 'cash_session_id'},
+    'sales': {'id', 'customer_id', 'customer_name', 'cash_session_id', 'folio', 'discount_percent'},
+    'products': {'barcode', 'unit', 'tax_rate', 'tax_exempt', 'price_includes_tax', 'active'},
+    'cash_registers': {'id', 'branch_id'},
+    'cash_sessions': {'register_id', 'cashier_id', 'expected_on_close'},
+    'stock': {'average_cost'},
+    'purchases': {'id', 'supplier_id'},
+    'purchase_receipts': {'id', 'request_key'},
+    'inventory_counts': {'expected', 'counted'},
     'stock_transfers': {'id', 'request_key'},
 }
 with sqlite3.connect(db_path) as db:
