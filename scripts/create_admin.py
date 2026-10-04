@@ -10,13 +10,13 @@ from backend.app.main import Branch, Session, User, engine, password_hash
 def main():
     while True:
         username = input('Usuario administrador (mínimo 3 caracteres): ').strip()
-        if len(username) >= 3:
+        if 3 <= len(username) <= 80 and not any(c.isspace() for c in username):
             break
-        print('El nombre de usuario debe tener al menos 3 caracteres. Vuelve a escribirlo.')
+        print('El usuario debe tener entre 3 y 80 caracteres, sin espacios. Ejemplo: isata.')
     while True:
         password = getpass.getpass('Contraseña (mínimo 12 caracteres; no se muestra al escribir): ')
-        if len(password) < 12:
-            print('La contraseña debe tener al menos 12 caracteres. Vuelve a escribirla.')
+        if not 12 <= len(password) <= 200:
+            print('La contraseña debe tener entre 12 y 200 caracteres. Vuelve a escribirla.')
             continue
         confirmation = getpass.getpass('Confirma la contraseña: ')
         if password == confirmation:
@@ -35,7 +35,7 @@ def main():
             raise SystemExit('La empresa no tiene sucursales; crea primero las sucursales')
         db.add(User(username=username, empresa_id=empresa_id, password_hash=password_hash.hash(password), role='admin_general'))
         db.commit()
-    print('Administrador creado')
+    print(f'Administrador creado. Usuario para entrar en el navegador: {username}')
 
 if __name__ == '__main__':
     main()
