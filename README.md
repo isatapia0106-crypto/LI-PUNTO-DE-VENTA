@@ -69,8 +69,8 @@ Consulta `docs/operations/SEGURIDAD_Y_MIGRACIONES.md` antes de actualizar una in
 
 Cierra el servidor antes de recuperar el acceso. Desde la raíz del proyecto ejecuta:
 
-```powershell
+~~~powershell
 .\.venv\Scripts\python.exe scripts/reset_local_password.py
-```
+~~~
 
 El asistente muestra los nombres exactos, pide el usuario existente, permite corregir su nombre (Enter lo conserva) y solicita una nueva contraseña oculta con confirmación. Escribe GUARDAR para aplicar. Crea un respaldo SQLite antes del cambio y conserva el ID, empresa, rol y asignaciones. No activa cuentas desactivadas. Esta herramienta requiere acceso al archivo local pos.db; no es un endpoint web ni recuperación de PostgreSQL. Reinicia INICIAR_LI_POS.bat para invalidar las sesiones locales y entra con los nuevos datos.
