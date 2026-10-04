@@ -25,7 +25,13 @@ async function post(url, data, withKey=false){
   if(withKey)retryKeys.delete(fingerprint);
   return result;
 }
-function panel(name){for(const p of ['sales','cash','purchases','inventory'])$(p+'Panel').hidden=p!==name;}
+function panel(name){
+ for(const p of ['sales','cash','purchases','inventory'])$(p+'Panel').hidden=p!==name;
+ for(const [id,p] of [['navSales','sales'],['navCash','cash'],['navPurchases','purchases'],['navInventory','inventory']]){
+  $(id).classList.toggle('is-active',p===name);
+  if(p===name)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');
+ }
+}
 for(const [id,p] of [['navSales','sales'],['navCash','cash'],['navPurchases','purchases'],['navInventory','inventory']])$(id).onclick=()=>panel(p);
 async function loadCustomers(selected=''){
   customersList=await request(`/api/customers?branch_id=${branchId()}&q=${encodeURIComponent($('customerSearch').value.trim())}`);
