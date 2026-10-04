@@ -24,3 +24,99 @@
 .login-footnote{color:#a8abb2;margin:22px 0 0;padding-top:18px;border-top:1px solid #3b3e45;font-size:12px}
 #loginDialog :focus-visible{outline:3px solid #fbbe27;outline-offset:3px}
 @media(max-width:480px){#loginDialog{padding:24px}#loginTitle{font-size:23px}}
+
+/* Distribución adaptable de las pantallas de operación */
+@media screen {
+  body{min-width:0}
+  header{gap:16px;flex-wrap:wrap}
+  header strong{overflow-wrap:anywhere}
+  header small{display:flex;align-items:center;gap:12px;min-width:0}
+  #who{overflow-wrap:anywhere}
+  button{min-height:44px;white-space:normal;overflow-wrap:anywhere;touch-action:manipulation}
+  input,select{min-width:0;max-width:100%;min-height:44px;font-size:16px}
+  :focus-visible{outline:2px solid #fbbe27;outline-offset:3px}
+  main{align-items:start}
+  main>*{min-width:0}
+  .catalog,aside,.workspace,.purchase{overflow-wrap:anywhere}
+  .toolbar{gap:12px;align-items:center}
+  .toolbar>label{flex:0 1 240px;margin:0;min-width:0}
+  .toolbar nav{flex:1 1 400px;min-width:0}
+  .toolbar nav button{flex:1 1 140px}
+  .heading{flex-wrap:wrap}
+  .heading h1{flex:1 1 180px;margin-bottom:0}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,180px),1fr))}
+  .card{min-width:0}
+  .card small{overflow-wrap:anywhere}
+  .cartline{display:grid;grid-template-columns:minmax(0,1fr) 44px 44px;gap:8px}
+  .cartline span{overflow-wrap:anywhere}
+  .cartline button{min-height:44px;padding:8px}
+  .totals div{align-items:start}
+  .totals b{flex:none;white-space:nowrap}
+  .workspace{width:calc(100% - 48px)}
+  .sale>*{min-width:0;overflow-wrap:anywhere}
+  .sale>span{flex:1 1 220px}
+  .sale button{flex:0 1 auto}
+  .inline label{min-width:0;flex:1 1 160px}
+  .inline button{flex:0 1 180px;margin-bottom:16px}
+  dialog{max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);padding:24px;overscroll-behavior:contain}
+  dialog form{min-width:0}
+  dialog menu{flex-wrap:wrap}
+  dialog menu button{flex:1 1 130px;min-width:0}
+  #receiptContent{max-width:100%}
+  #checkout>button:not(.primary){margin:4px 2px 4px 0}
+}
+@media screen and (min-width:851px) and (max-width:1100px){
+  main{grid-template-columns:minmax(0,1fr) 320px;gap:16px;padding:16px}
+  .catalog,aside{padding:18px}
+  .toolbar{padding:16px}
+  .toolbar nav{flex-basis:100%;order:2}
+}
+@media screen and (max-width:850px){
+  header{display:flex;padding:16px}
+  main{display:grid;grid-template-columns:minmax(0,1fr);padding:16px;gap:16px}
+  #checkout{order:0}
+  .toolbar{padding:16px}
+  .toolbar>label{flex:1 1 200px}
+  .toolbar nav{order:2;flex-basis:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .workspace{width:calc(100% - 32px);margin:16px auto;padding:20px}
+  #notice{margin:12px 16px}
+}
+@media screen and (max-width:560px){
+  header{padding:12px;gap:10px}
+  header strong{font-size:19px}
+  header small{width:100%;justify-content:space-between}
+  main{padding:12px;gap:12px}
+  .catalog,aside{padding:16px;border-radius:12px}
+  h1{font-size:25px}
+  h2{font-size:20px}
+  .toolbar{padding:12px;gap:10px}
+  .toolbar>label{flex:1 1 160px}
+  .toolbar nav{gap:8px}
+  .toolbar nav button{padding:10px 8px;font-size:14px}
+  .heading{align-items:stretch;gap:12px}
+  .heading h1,.heading>button{flex-basis:100%}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .card{padding:12px}
+  .card em{font-size:20px}
+  .card button{padding:10px 6px}
+  .workspace{width:calc(100% - 24px);margin:12px auto;padding:16px}
+  .inline{display:grid;grid-template-columns:minmax(0,1fr);gap:0}
+  .inline label{margin:10px 0}
+  .inline button{margin:12px 0}
+  .sale{gap:10px;padding:12px 0}
+  .sale>span{flex-basis:100%}
+  .purchase{padding:12px}
+  .totals div{flex-wrap:wrap;gap:6px}
+  .totals b{margin-left:auto}
+  #checkout>button:not(.primary){width:100%;margin:4px 0}
+  dialog{padding:16px;border-radius:12px}
+  #loginDialog{padding:24px 20px}
+  #notice{margin:12px}
+}
+@media screen and (max-width:359px){
+  .grid{grid-template-columns:minmax(0,1fr)}
+  .toolbar nav{grid-template-columns:minmax(0,1fr)}
+  .login-password{flex-wrap:wrap}
+  .login-password input{flex-basis:100%}
+  .login-password button{margin-top:0}
+}
