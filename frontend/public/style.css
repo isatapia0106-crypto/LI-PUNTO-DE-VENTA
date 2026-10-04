@@ -120,3 +120,105 @@
   .login-password input{flex-basis:100%}
   .login-password button{margin-top:0}
 }
+
+/* Sistema visual LI */
+@media screen{
+ :root{--surface:#1a1d23;--surface-raised:#22262e;--line:#343a45;--muted:#b0b7c4;--accent:#fbbe27;color:#edf0f6;background:#101217;color-scheme:dark}
+ body{background:radial-gradient(ellipse at 15% 0%,#24212a 0,transparent 45%),#101217;line-height:1.5}
+ header{padding:22px clamp(16px,3vw,48px);background:#15181ee8;border-bottom:1px solid var(--line)}
+ header strong{display:flex;align-items:center;gap:12px;font-size:30px;letter-spacing:-1px;color:var(--accent)}
+ header strong span{font-size:12px;letter-spacing:2px;color:#edf0f6;font-weight:750}
+ .brand-lockup p{margin:4px 0 0;color:var(--muted);font-size:12px}
+ header small{padding:6px 8px 6px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+ #who{color:#edf0f6;font-size:13px}
+ .toolbar{background:#15181e;border-bottom:1px solid var(--line);padding:14px clamp(16px,3vw,48px)}
+ .toolbar>label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+ .toolbar select{text-transform:none;letter-spacing:0;margin-top:5px}
+ .toolbar nav{gap:6px}
+ .toolbar nav button{background:transparent;border-color:transparent;color:var(--muted);font-size:13px;font-weight:600}
+ .toolbar nav button:hover{background:#252a33;color:#fff;filter:none}
+ .toolbar nav button.is-active{background:#fbbe2718;border-color:#fbbe274a;color:#ffd46b;box-shadow:inset 0 -2px var(--accent)}
+ button{background:#282e38;border:1px solid #414958;font-size:14px;font-weight:600;transition:background .15s,border-color .15s}
+ button:hover{background:#333c49;filter:none;border-color:#647086}
+ button.primary{background:var(--accent);color:#17191d;border-color:var(--accent);box-shadow:0 4px 14px #fbbe2714}
+ button.primary:hover{background:#ffd163}
+ input,select{background:#12161d;border-color:#3e4654;border-radius:10px;color:#edf0f6}
+ input::placeholder{color:#929cac}
+ input:focus,select:focus{border-color:var(--accent)}
+ main{max-width:1600px;padding:28px clamp(16px,3vw,48px);gap:24px;grid-template-columns:minmax(0,1fr) 370px}
+ .catalog,aside,.workspace{background:var(--surface);border:1px solid var(--line);box-shadow:0 8px 30px #0002;border-radius:18px}
+ .catalog,aside{padding:26px}
+ h1{font-size:clamp(24px,2.3vw,34px);font-weight:750;letter-spacing:-.8px;line-height:1.2}
+ h2{font-size:18px;letter-spacing:-.25px;margin-top:32px}
+ .section-kicker{font-size:10px;font-weight:800;letter-spacing:2px;color:var(--accent);margin:0 0 8px}
+ .heading{padding-bottom:22px;border-bottom:1px solid var(--line);margin-bottom:22px}
+ .heading>div{min-width:0;flex:1 1 200px}
+ .heading h1{margin:0}
+ .heading>button{background:#fbbe2712;color:#ffda7c;border-color:#fbbe2745}
+ .search-label{font-size:12px;color:var(--muted);margin:0 0 8px}
+ #search{padding:15px 16px;background:#12161d}
+ .grid{gap:14px;margin-top:22px}
+ .card{background:linear-gradient(145deg,#262b34,#20242c);border:1px solid #3b4350;border-radius:14px;padding:18px;gap:8px;transition:border-color .15s}
+ .card:hover{border-color:#8a7442}
+ .card>button:first-child{border:0;background:transparent;text-align:left;padding:0;font-size:15px;line-height:1.4;min-height:48px}
+ .card>button:first-child:hover{color:#ffda7c}
+ .card small{font-size:11px;line-height:1.6;color:var(--muted);margin:0}
+ .card em{font-size:25px;font-weight:750;letter-spacing:-.5px;margin:4px 0}
+ .card>button:last-child:not(:first-child){margin-top:auto;background:#303744;font-size:12px;min-height:44px}
+ .checkout-title{font-size:26px;margin:0 0 18px;letter-spacing:-.6px}
+ .cash-status{background:#12161d;padding:14px 16px;border:1px solid var(--line);border-radius:12px}
+ .cash-status>span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+ #checkoutCash{font-size:13px;margin:6px 0 0}
+ label{font-size:13px;font-weight:600;color:#d9dee8}
+ .muted{color:var(--muted);font-size:12px;line-height:1.7}
+ .customer-actions{display:flex;gap:6px;flex-wrap:wrap}
+ .customer-actions button{flex:1 1 95px;font-size:11px;padding:9px 8px}
+ #cart{margin-top:20px}
+ #cart:empty::before{content:"Agrega productos del catálogo para iniciar la venta.";display:block;text-align:center;padding:24px 16px;border:1px dashed #4a5260;border-radius:12px;color:var(--muted);font-size:13px}
+ .totals{background:#12161d;border:1px solid var(--line);border-radius:14px;padding:16px;margin:22px 0}
+ .totals div{font-size:12px;color:var(--muted)}
+ .totals b{color:#edf0f6;font-size:14px;font-variant-numeric:tabular-nums}
+ .totals .grand{margin-top:10px;padding-top:15px;border-top:1px solid var(--line);font-size:19px;color:#edf0f6}
+ .totals .grand b{font-size:28px;letter-spacing:-1px;color:var(--accent)}
+ #charge{min-height:52px;font-size:16px}
+ #notice{margin:16px clamp(16px,3vw,48px);padding:12px 16px;border:1px solid #fbbe2740;border-radius:12px;background:#fbbe270d}
+ #notice:empty{display:none}
+ #summary{padding:18px;border:1px solid #fbbe2733;border-left:3px solid var(--accent);border-radius:10px;background:#fbbe2708;font-variant-numeric:tabular-nums}
+ .sale{padding:15px 0;border-color:var(--line);font-size:13px}
+ .sale button{font-size:12px}
+ .sale b{font-variant-numeric:tabular-nums}
+ .workspace{max-width:1504px;padding:28px;margin-top:28px}
+ .workspace>h1{padding-bottom:20px;border-bottom:1px solid var(--line)}
+ .workspace form{background:#14181f;border:1px solid var(--line);border-radius:14px;padding:20px;margin:20px 0}
+ .workspace form h2{margin-top:0}
+ .purchase{background:#20252d;border-color:var(--line);border-radius:14px;padding:20px}
+ .purchase h3{font-size:16px;letter-spacing:-.3px}
+ dialog{background:#1a1e26;border-color:#495364;box-shadow:0 30px 90px #0009}
+ dialog::backdrop{background:#080b11cc}
+ #loginDialog{background:radial-gradient(ellipse at top left,#3d3320 0,transparent 60%),#191d24;border-color:#524733;border-top:3px solid var(--accent)}
+}
+@media screen and (min-width:851px) and (max-width:1100px){
+ main{grid-template-columns:minmax(0,1fr) 320px;padding:20px;gap:18px}
+ .catalog,aside{padding:20px}
+}
+@media screen and (max-width:850px){
+ main{grid-template-columns:minmax(0,1fr);padding:16px;gap:16px}
+ .catalog,aside{padding:22px}
+ .workspace{margin-top:16px;padding:22px}
+}
+@media screen and (max-width:560px){
+ header{padding:16px}
+ header small{justify-content:space-between}
+ .toolbar{padding:12px}
+ main{padding:12px}
+ .catalog,aside,.workspace{padding:18px;border-radius:14px}
+ .heading>div,.heading>button{flex-basis:100%}
+ .grid{gap:10px}
+ .card{padding:12px}
+ .card em{font-size:22px}
+ .card>button:first-child{font-size:13px}
+ .workspace form,.purchase{padding:14px}
+ .customer-actions{display:grid;grid-template-columns:1fr}
+ #notice{margin:12px}
+}
+@media(prefers-reduced-motion:reduce){button,.card{transition:none}}
