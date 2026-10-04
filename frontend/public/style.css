@@ -256,3 +256,29 @@
 }
 @media(prefers-reduced-motion:reduce){.card{animation:none}}
 @media print{.action-toast,.mobile-cart{display:none!important}}
+
+@media screen{
+ .module-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 16px;background:#14181f;border:1px solid var(--line);border-radius:14px;padding:18px;margin:22px 0}
+ .module-tools label{margin:0;font-size:12px}
+ .module-tools button{align-self:end}
+ .module-count{grid-column:1/-1;font-size:12px;color:var(--muted);margin:0}
+ .records-list{margin:12px 0 24px}
+ .records-list:empty::before{content:attr(data-empty);display:block;padding:24px 18px;border:1px dashed #475160;border-radius:12px;font-size:13px;color:var(--muted);text-align:center}
+ .records-list.no-matches::after{content:"No hay coincidencias. Cambia o limpia la búsqueda.";display:block;padding:22px 16px;border:1px dashed #475160;border-radius:12px;font-size:13px;color:var(--muted)}
+ .network-status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:8px}
+ .network-status:empty{display:none}
+ .network-status.loading::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid #535d6d;border-top-color:var(--accent);animation:loadingTurn .7s linear infinite}
+ @keyframes loadingTurn{to{transform:rotate(360deg)}}
+ .workspace>h2{display:flex;align-items:center;gap:12px;padding-top:12px}
+ .workspace>h2::before{content:"";display:inline-block;width:4px;height:18px;background:var(--accent);border-radius:3px;flex:none}
+ #cashStatus{padding:18px;border-radius:12px;background:#fbbe270a;border:1px solid #fbbe2740}
+ #openControls,#closeControls{max-width:760px;padding:18px;background:#14181f;border:1px solid var(--line);border-radius:14px;margin:18px 0}
+ #openControls label,#closeControls label{margin-top:0}
+ #openCash,#closeCash{background:#fbbe2718;border-color:#fbbe2760;color:#ffda7c;width:100%}
+ #transferPanel{margin-top:28px}
+}
+@media screen and (max-width:560px){
+ .module-tools{grid-template-columns:minmax(0,1fr);padding:14px}
+ .module-tools button{width:100%}
+}
+@media(prefers-reduced-motion:reduce){.network-status.loading::before{animation:none}}
