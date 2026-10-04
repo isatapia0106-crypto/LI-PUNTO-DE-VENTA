@@ -17,11 +17,15 @@ const run=fn=>async event=>{try{await fn(event);}catch(error){notice(error.messa
 function node(tag, text, className){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(className)n.className=className;return n;}
 function button(text, action){const b=node('button',text);b.type='button';b.onclick=run(action);return b;}
 function options(id, rows, label, selected){const prev=selected??$(id).value;$(id).replaceChildren(...rows.map(r=>{const o=node('option',label(r));o.value=r.id;return o;}));if(rows.some(r=>String(r.id)===String(prev)))$(id).value=String(prev);}
+let pendingRequests=0;
 async function request(url, opts={}){
+ pendingRequests++;$('networkStatus').textContent='Actualizando…';$('networkStatus').classList.add('loading');
+ try{
   const response=await fetch(url,{...opts,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{ }),...opts.headers}});
   const data=await response.json().catch(()=>({}));
   if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:Array.isArray(data.detail)?data.detail.map(d=>`${d.loc.at(-1)}: ${d.msg}`).join('; '):'Error de conexión');
   return data;
+ }finally{pendingRequests--;if(!pendingRequests){$('networkStatus').textContent='';$('networkStatus').classList.remove('loading');}}
 }
 async function post(url, data, withKey=false){
   const fingerprint=JSON.stringify([url,Object.fromEntries(Object.entries(data).filter(([key])=>key!=='approval'))]);
@@ -164,7 +168,10 @@ $('purchaseForm').onsubmit=run(async e=>{e.preventDefault();if(!purchaseDraft.si
 $('transferForm').onsubmit=run(async e=>{e.preventDefault();await post('/api/stock/transfers',{source_branch_id:branchId(),target_branch_id:Number($('transferTarget').value),product_id:Number($('transferProduct').value),quantity:Number($('transferQuantity').value)},true);$('transferQuantity').value='';await refresh();notice('Traspaso registrado');});
 $('countForm').onsubmit=run(async e=>{e.preventDefault();await post('/api/stock/counts',{branch_id:branchId(),product_id:countingProduct.id,expected:countingProduct.stock,counted:Number($('countQty').value),reason:$('countReason').value},true);$('countDialog').close();await refresh();notice('Conteo conciliado y registrado en kardex');});$('cancelCount').onclick=()=>$('countDialog').close();
 $('printReceipt').onclick=()=>window.print();$('shareReceipt').onclick=()=>window.open(`https://wa.me/?text=${encodeURIComponent(receiptText)}`,'_blank','noopener,noreferrer');$('closeReceipt').onclick=()=>$('receiptDialog').close();
-$('branch').onchange=run(async()=>{cart.clear();purchaseDraft.clear();drawPurchaseDraft();myCash={open:false};cash={open:false};$('customerSearch').value='';if(can('customer_read'))await loadCustomers();await refresh();});$('reload').onclick=run(()=>refresh());
+$('branch').onchange=run(async()=>{cart.clear();purchaseDraft.clear();drawPurchaseDraft();myCash={open:false};cash={open:false};$('customerSearch').value='';if(can('customer_read'))await loadCustomers();await refresh();});$('reload').onclick=run(async()=>{
+ const b=$('reload');if(b.disabled)return;b.disabled=true;
+ try{await refresh();}finally{b.disabled=false;}
+});
 async function start(){me=await request('/api/auth/me');permissions=new Set(me.permissions);branches=await request('/api/branches');options('branch',branches,b=>b.name);$('who').textContent=me.username;
  $('new').hidden=!can('catalog_write');$('checkout').hidden=!can('sale');$('navCash').hidden=!can('cash_open')&&!can('report');$('navPurchases').hidden=!can('purchase_read')&&!can('purchase_write');$('navInventory').hidden=!can('stock_write')&&!can('report');$('newSupplier').hidden=!can('purchase_write');$('purchaseForm').hidden=!can('purchase_write');
  panel(can('sale')?'sales':can('purchase_read')?'purchases':'inventory');if(!branches.length)return notice('No tienes sucursales asignadas');if(can('customer_read'))await loadCustomers();await refresh();}
@@ -184,4 +191,28 @@ $('loginForm').onsubmit=async e=>{
  finally{loginBusy=false;$('loginSubmit').disabled=false;$('loginSubmit').textContent='Entrar';form.removeAttribute('aria-busy');}
 };
 $('logout').onclick=()=>{token=null;me=null;permissions.clear();cart.clear();purchaseDraft.clear();retryKeys.clear();myCash={open:false};cash={open:false};quote=null;quoteVersion++;for(const id of ['products','sales','inventory','purchases','suppliers','cashSessions','cashMovements','cart','customerHistory','counts','movements'])$(id).replaceChildren();$('who').textContent='Sin sesión';$('logout').hidden=true;$('charge').disabled=true;$('mobileCart').hidden=true;$('actionToast').hidden=true;$('notice').textContent='';resetLogin();$('loginDialog').showModal();};
+
+function filterModule(input){
+ const query=input.value.trim().toLocaleLowerCase('es');
+ let total=0,shown=0;
+ for(const id of input.dataset.listSearch.split(',')){
+  const list=$(id);let visible=0;
+  for(const row of list.children){
+   total++;const match=!query||row.textContent.toLocaleLowerCase('es').includes(query);
+   row.hidden=!match;if(match){shown++;visible++;}
+  }
+  list.classList.toggle('no-matches',!!list.children.length&&!visible);
+ }
+ $(input.id+'Count').textContent=shown+' de '+total+' registros visibles';
+}
+document.querySelectorAll('[data-list-search]').forEach(input=>{
+ input.addEventListener('input',()=>filterModule(input));
+ for(const id of input.dataset.listSearch.split(',')){
+  new MutationObserver(()=>filterModule(input)).observe($(id),{childList:true,subtree:true,characterData:true});
+ }
+});
+document.querySelectorAll('[data-reset-search]').forEach(button=>button.onclick=()=>{
+ const input=$(button.dataset.resetSearch);input.value='';filterModule(input);input.focus();
+});
+
 $('loginDialog').addEventListener('cancel',e=>e.preventDefault());$('loginDialog').showModal();
