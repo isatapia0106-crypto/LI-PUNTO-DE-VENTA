@@ -222,3 +222,37 @@
  #notice{margin:12px}
 }
 @media(prefers-reduced-motion:reduce){button,.card{transition:none}}
+
+@media screen{
+ .catalog-controls{display:flex;gap:16px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-top:18px}
+ .filter-chips{display:flex;gap:8px;flex-wrap:wrap}
+ .filter-chips button{border-radius:100px;font-size:12px;padding:8px 14px;background:transparent}
+ .filter-chips button.is-active{background:#fbbe271a;color:#ffdb80;border-color:#fbbe2766}
+ .catalog-controls label{font-size:11px;margin:0;min-width:160px}
+ .catalog-controls select{font-size:14px;padding:10px}
+ .catalog-empty{grid-column:1/-1;padding:32px 16px;text-align:center;border:1px dashed #495362;border-radius:14px;color:var(--muted)}
+ .stock-badge{align-self:flex-start;font-size:10px;border-radius:100px;padding:4px 9px;color:#c6ccd6;background:#343b47}
+ .stock-badge.available{background:#163d32;color:#9ee4c8}
+ .checkout-heading{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+ .checkout-heading .checkout-title{margin:0;flex:1}
+ .count-badge{font-size:11px;border:1px solid #52505a;border-radius:100px;padding:5px 10px;color:#ffd77a}
+ .text-action{width:100%;margin-top:10px;background:transparent;color:var(--muted)}
+ .action-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:20;width:max-content;max-width:calc(100vw - 32px);padding:14px 20px;border-radius:14px;background:#2b3340;border:1px solid #647086;box-shadow:0 12px 50px #0008;overflow-wrap:anywhere;pointer-events:none;font-size:14px}
+ .mobile-cart{display:none}
+ .card{animation:cardEnter .18s ease-out}
+ @keyframes cardEnter{from{opacity:.5;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+}
+@media screen and (max-width:850px){
+ body{padding-bottom:86px}
+ .mobile-cart{display:block;position:fixed;bottom:16px;left:16px;right:16px;width:calc(100% - 32px);z-index:15;background:#fbbe27;color:#15181e;border-color:#fbbe27;box-shadow:0 6px 30px #0009;min-height:52px}
+ .action-toast{bottom:86px}
+ #checkout{scroll-margin-top:16px}
+}
+@media screen and (max-width:560px){
+ .catalog-controls{gap:12px}
+ .filter-chips{width:100%;gap:6px}
+ .filter-chips button{flex:1;padding:8px 10px}
+ .catalog-controls label{width:100%}
+}
+@media(prefers-reduced-motion:reduce){.card{animation:none}}
+@media print{.action-toast,.mobile-cart{display:none!important}}
