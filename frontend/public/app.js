@@ -136,6 +136,20 @@ $('branch').onchange=run(async()=>{cart.clear();purchaseDraft.clear();drawPurcha
 async function start(){me=await request('/api/auth/me');permissions=new Set(me.permissions);branches=await request('/api/branches');options('branch',branches,b=>b.name);$('who').textContent=me.username;
  $('new').hidden=!can('catalog_write');$('checkout').hidden=!can('sale');$('navCash').hidden=!can('cash_open')&&!can('report');$('navPurchases').hidden=!can('purchase_read')&&!can('purchase_write');$('navInventory').hidden=!can('stock_write')&&!can('report');$('newSupplier').hidden=!can('purchase_write');$('purchaseForm').hidden=!can('purchase_write');
  panel(can('sale')?'sales':can('purchase_read')?'purchases':'inventory');if(!branches.length)return notice('No tienes sucursales asignadas');if(can('customer_read'))await loadCustomers();await refresh();}
-$('loginForm').onsubmit=async e=>{e.preventDefault();try{const f=new FormData(e.currentTarget);const r=await post('/api/auth/login',{username:f.get('username'),password:f.get('password')});token=r.access_token;await start();$('loginDialog').close();$('loginForm').reset();$('logout').hidden=false;$('loginError').textContent='';}catch(error){$('loginError').textContent=error.message;}};
-$('logout').onclick=()=>{token=null;me=null;permissions.clear();cart.clear();purchaseDraft.clear();retryKeys.clear();myCash={open:false};cash={open:false};quote=null;quoteVersion++;for(const id of ['products','sales','inventory','purchases','suppliers','cashSessions','cashMovements','cart','customerHistory','counts','movements'])$(id).replaceChildren();$('who').textContent='Sin sesión';$('logout').hidden=true;$('charge').disabled=true;$('loginForm').reset();$('loginDialog').showModal();};
+let loginBusy=false;
+function resetLogin(){ $('loginForm').reset();$('loginPassword').type='password';$('togglePassword').textContent='Mostrar';$('togglePassword').setAttribute('aria-pressed','false');$('loginError').textContent='';$('capsWarning').hidden=true; }
+$('togglePassword').onclick=()=>{const show=$('loginPassword').type==='password';$('loginPassword').type=show?'text':'password';$('togglePassword').textContent=show?'Ocultar':'Mostrar';$('togglePassword').setAttribute('aria-pressed',String(show));};
+for(const event of ['keydown','keyup'])$('loginPassword').addEventListener(event,e=>{$('capsWarning').hidden=!e.getModifierState('CapsLock');});
+$('loginPassword').addEventListener('blur',()=>{$('capsWarning').hidden=true;});
+$('loginForm').addEventListener('input',()=>{$('loginError').textContent='';});
+$('loginForm').onsubmit=async e=>{
+ e.preventDefault();if(loginBusy)return;
+ const form=e.currentTarget;const f=new FormData(form);const username=String(f.get('username')).trim();
+ if(username.length<3){$('loginError').textContent='Escribe un usuario de al menos 3 caracteres.';$('loginUsername').focus();return;}
+ loginBusy=true;$('loginSubmit').disabled=true;$('loginSubmit').textContent='Entrando…';form.setAttribute('aria-busy','true');$('loginError').textContent='';
+ try{const r=await post('/api/auth/login',{username,password:f.get('password')});token=r.access_token;await start();$('loginDialog').close();resetLogin();$('logout').hidden=false;}
+ catch(error){token=null;me=null;permissions.clear();$('who').textContent='Sin sesión';$('logout').hidden=true;$('loginError').textContent=error instanceof TypeError?'No se pudo conectar con el servidor. Comprueba que la aplicación siga abierta.':error.message;}
+ finally{loginBusy=false;$('loginSubmit').disabled=false;$('loginSubmit').textContent='Entrar';form.removeAttribute('aria-busy');}
+};
+$('logout').onclick=()=>{token=null;me=null;permissions.clear();cart.clear();purchaseDraft.clear();retryKeys.clear();myCash={open:false};cash={open:false};quote=null;quoteVersion++;for(const id of ['products','sales','inventory','purchases','suppliers','cashSessions','cashMovements','cart','customerHistory','counts','movements'])$(id).replaceChildren();$('who').textContent='Sin sesión';$('logout').hidden=true;$('charge').disabled=true;resetLogin();$('loginDialog').showModal();};
 $('loginDialog').addEventListener('cancel',e=>e.preventDefault());$('loginDialog').showModal();
