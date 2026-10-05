@@ -282,3 +282,13 @@
  .module-tools button{width:100%}
 }
 @media(prefers-reduced-motion:reduce){.network-status.loading::before{animation:none}}
+
+@media screen{
+ #entityDialog{width:min(540px,calc(100vw - 24px));padding:28px}
+ #entityTitle{margin:0 0 12px;font-size:26px}
+ #entityHelp{padding:12px 14px;background:#12161d;border:1px solid var(--line);border-radius:10px}
+ #entityError{font-size:13px;color:#ffb4bd;line-height:1.6}
+ #entityError:empty{display:none}
+ #entityDialog menu{padding-top:16px;border-top:1px solid var(--line);margin-top:24px}
+}
+@media screen and (max-width:560px){#entityDialog{padding:20px}#entityTitle{font-size:23px}}
