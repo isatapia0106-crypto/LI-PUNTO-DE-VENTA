@@ -292,3 +292,17 @@
  #entityDialog menu{padding-top:16px;border-top:1px solid var(--line);margin-top:24px}
 }
 @media screen and (max-width:560px){#entityDialog{padding:20px}#entityTitle{font-size:23px}}
+
+@media screen{
+ .metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0}
+ .metric-card{padding:18px;background:#14181f;border:1px solid var(--line);border-radius:14px;min-width:0}
+ .metric-card span{display:block;color:var(--muted);font-size:11px;line-height:1.5}
+ .metric-card strong{display:block;margin-top:10px;font-size:clamp(18px,2vw,26px);color:#ffd77a;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+ .payment-review{padding:14px;background:#12161d;border:1px solid var(--line);border-radius:12px;margin:14px 0}
+ #paymentFeedback{font-size:13px;margin:0 0 12px;color:#9ee4c8}
+ #paymentFeedback.needs-attention{color:#ffd77a}
+ #exactPayment{width:100%;font-size:12px}
+ .operation-feedback{padding:12px;border-left:3px solid var(--accent);font-size:13px}
+}
+@media screen and (max-width:850px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media screen and (max-width:359px){.metric-grid{grid-template-columns:minmax(0,1fr)}}
