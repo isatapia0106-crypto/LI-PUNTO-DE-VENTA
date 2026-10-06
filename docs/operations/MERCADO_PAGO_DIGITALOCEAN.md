@@ -74,14 +74,34 @@ No crea otro cobro ni emite un ticket por sí solo. Los reembolsos y contracargo
 ventas entregadas quedan como incidencias persistentes visibles, sin cambiar caja,
 inventario o ventas automáticamente. Múltiples pagos se marcan para revisión.
 
-**Límites pendientes:** una reserva no caduca ni se libera por un pago rechazado:
-el mismo enlace puede volver a cobrarse. La liberación requiere deshabilitar el
-checkout y resolver cualquier pago tardío; aún no hay automatización para ello.
-Un timeout al crear la preferencia sigue requiriendo revisión supervisada en
-Mercado Pago. No se deben generar cobros de reemplazo. Los reembolsos, contracargos
- y pagos múltiples requieren resolución administrativa; el sistema no ejecuta
-reembolsos remotos ni asientos automáticos. Cerrar el turno antes de emitir el
-ticket de un pago aprobado sigue bloqueando su entrega y requiere intervención.
+**Cancelación de reservas:** usa **Cancelar checkout**, escribe el motivo y
+confirma. El sistema registra solicitante, motivo y fecha antes de contactar al
+proveedor, bloquea la emisión de tickets y oculta el enlace. Vence la preferencia,
+verifica mediante GET que quedó vencida, consulta los pagos y cancela los que estén
+pending, in_process o authorized; después vuelve a consultar el proveedor.
+Únicamente libera la reserva si todos los pagos encontrados están cancelled o
+rejected y no aparece una incidencia concurrente. La cancelación repetida devuelve
+el mismo resultado. No suma unidades: la reserva no había descontado inventario.
+
+Un error, timeout, búsqueda incompleta o preferencia desconocida mantiene la
+reserva; **Reintentar cancelación** retoma el proceso persistido. Si la creación
+original perdió la respuesta, busca una preferencia única por external_reference;
+no crea otra. Si no encuentra ninguna o encuentra varias, conserva la reserva.
+Los checkouts nuevos tienen vigencia de 30 minutos; **vencer el enlace no libera
+inventario automáticamente**. La liberación se ejecuta mediante el botón con las
+verificaciones anteriores. No hay tarea programada de liberación.
+
+**Pagos tardíos:** una consulta no puede garantizar que nunca llegue una aprobación
+posterior. Un webhook o conciliación de un pago no terminal tras liberar la reserva
+registra una incidencia durable. El checkout permanece cancelado y no puede emitir
+ticket, ni reclamar inventario ya liberado. Requiere revisión y reembolso externo;
+no se ejecutan reembolsos remotos ni asientos automáticos. Los estados aprobados o
+las ventas entregadas no se cancelan por este flujo. Cerrar el turno antes de emitir
+el ticket de un pago aprobado sigue requiriendo intervención.
+
+La conducta de vencimiento de preferencias y cancelación de pagos debe verificarse
+con Mercado Pago en una prueba controlada. Las pruebas locales simulan respuestas
+del proveedor y no sustituyen esa validación.
 
 ## Validación de PostgreSQL y recuperación
 

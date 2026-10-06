@@ -53,6 +53,8 @@ def migrate(path):
                 baseline = 'd6a013be7829'
             if baseline == 'd6a013be7829' and 'reservation_active' in {x[1] for x in db.execute('PRAGMA table_info(payment_intents)')}:
                 baseline = 'e7b124cf8930'
+            if baseline == 'e7b124cf8930' and 'cancel_requested_at' in {x[1] for x in db.execute('PRAGMA table_info(payment_intents)')}:
+                baseline = 'f8c235da9041'
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise SystemExit('La base tiene errores de integridad. No se modificó.')
         backup = path.with_name(path.name + '.backup-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))

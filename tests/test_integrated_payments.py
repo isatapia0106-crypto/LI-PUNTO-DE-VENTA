@@ -105,3 +105,119 @@ def test_reconcile_missing_webhook_and_persist_chargeback(provider,monkeypatch):
     assert r.status_code==200 and 'charged_back' in r.json()['review_reason']
     assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==409
     assert client.post(f"/api/payments/{intent['id']}/reconcile",headers=OUTSIDER,json={}).status_code==404
+
+@pytest.fixture
+def cancellation_provider(provider,monkeypatch):
+    state={'payments':{},'expires':False,'expiration_date_to':None,'calls':[], 'fail':None,'late':False}
+    def install(intent):
+        state['intent']=intent
+        def call(method,path,payload=None,key=None):
+            state['calls'].append((method,path))
+            if state['fail'] and method==state['fail'][0] and path.startswith(state['fail'][1]):
+                from fastapi import HTTPException
+                raise HTTPException(502,'Proveedor temporalmente no disponible')
+            if path.startswith('/v1/payments/search?'):
+                return {'results':list(state['payments'].values()),'paging':{'total':len(state['payments'])}}
+            if path.startswith('/checkout/preferences/search?'):
+                return {'elements':[{'id':'pref-1'}],'total':1}
+            if path=='/checkout/preferences/pref-1':
+                if method=='PUT':
+                    state.update(payload)
+                return {'id':'pref-1','external_reference':intent['id'],'collector_id':123,
+                        'expires':state['expires'],'expiration_date_to':state['expiration_date_to']}
+            pid=path.split('/')[-1]
+            pay=state['payments'][pid]
+            if method=='PUT':pay['status']='approved' if state['late'] else 'cancelled'
+            return pay
+        monkeypatch.setattr(mp,'call',call)
+        return state
+    return install
+
+
+def cancel(intent,headers,reason='Cliente abandonó el cobro'):
+    return client.post(f"/api/payments/{intent['id']}/cancel",headers=headers,json={'reason':reason})
+
+
+def test_cancel_unused_checkout_release_replay_and_late_payment(cancellation_provider):
+    from backend.app.main import reserved_quantity
+    headers,_,pid,intent,_=setup_intent();state=cancellation_provider(intent)
+    assert cancel(intent,OUTSIDER).status_code==404
+    r=cancel(intent,headers);assert r.status_code==200,r.text
+    assert r.json()['status']=='cancelled' and not r.json()['reserved'] and r.json()['checkout_url'] is None
+    with Session(engine) as db:assert reserved_quantity(db,6,pid)==0
+    before=len(state['calls']);assert cancel(intent,headers).status_code==200
+    assert len(state['calls'])==before
+    pay=payment(intent);state['payments'][str(pay['id'])]=pay
+    assert notify(pay).status_code==200
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id'])
+        assert saved.status=='cancelled' and not saved.reservation_active
+        assert 'después de cancelación' in saved.review_reason
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==409
+
+
+def test_cancel_pending_payment_verified_before_release(cancellation_provider):
+    headers,_,_,intent,_=setup_intent();state=cancellation_provider(intent)
+    pay=payment(intent,status='pending');state['payments'][str(pay['id'])]=pay
+    assert notify(pay).status_code==200
+    r=cancel(intent,headers);assert r.status_code==200,r.text
+    assert pay['status']=='cancelled' and not r.json()['reserved']
+
+
+def test_cancel_timeout_retains_reservation_and_retry_completes(cancellation_provider):
+    headers,_,_,intent,_=setup_intent();state=cancellation_provider(intent)
+    state['fail']=('PUT','/checkout/preferences/')
+    assert cancel(intent,headers).status_code==502
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id'])
+        assert saved.reservation_active and saved.cancel_requested_at and not saved.cancelled_at
+        assert saved.status=='cancel_pending'
+    state['fail']=None
+    assert cancel(intent,headers).json()['reserved'] is False
+
+
+def test_approval_races_pending_cancellation_retains_stock(cancellation_provider):
+    headers,_,_,intent,_=setup_intent();state=cancellation_provider(intent)
+    pay=payment(intent,status='pending');state['payments'][str(pay['id'])]=pay;state['late']=True
+    assert cancel(intent,headers).status_code==409
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id'])
+        assert saved.reservation_active and not saved.cancelled_at and saved.review_reason
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==409
+
+
+def test_approved_checkout_cannot_be_cancelled(cancellation_provider):
+    headers,_,_,intent,_=setup_intent();state=cancellation_provider(intent)
+    pay=payment(intent);state['payments'][str(pay['id'])]=pay;assert notify(pay).status_code==200
+    before=len(state['calls']);assert cancel(intent,headers).status_code==409
+    assert len(state['calls'])==before
+    with Session(engine) as db:assert db.get(PaymentIntent,intent['id']).cancel_requested_at is None
+
+
+def test_cancel_unverified_expiry_and_missing_preference_keep_reservation(cancellation_provider,monkeypatch):
+    headers,_,_,intent,_=setup_intent();state=cancellation_provider(intent)
+    original=mp.call
+    def unconfirmed(method,path,payload=None,key=None):
+        result=original(method,path,payload,key)
+        if method=='GET' and path=='/checkout/preferences/pref-1':result['expires']=False
+        return result
+    monkeypatch.setattr(mp,'call',unconfirmed)
+    assert cancel(intent,headers).status_code==409
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id']);assert saved.reservation_active
+        saved.preference_id=None;db.commit()
+    def missing(method,path,payload=None,key=None):
+        if path.startswith('/checkout/preferences/search?'):return {'elements':[],'total':0}
+        return original(method,path,payload,key)
+    monkeypatch.setattr(mp,'call',missing)
+    assert cancel(intent,headers).status_code==409
+    with Session(engine) as db:assert db.get(PaymentIntent,intent['id']).reservation_active
+
+
+def test_cancel_recovers_preference_after_lost_creation_response(cancellation_provider):
+    headers,_,_,intent,_=setup_intent();state=cancellation_provider(intent)
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id']);saved.preference_id=None;saved.checkout_url=None;saved.status='creating';db.commit()
+    r=cancel(intent,headers);assert r.status_code==200,r.text
+    assert not r.json()['reserved']
+    with Session(engine) as db:assert db.get(PaymentIntent,intent['id']).preference_id=='pref-1'

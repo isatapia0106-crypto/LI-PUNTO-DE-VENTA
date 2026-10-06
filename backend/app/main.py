@@ -166,6 +166,10 @@ class PaymentIntent(Base):
     payload: Mapped[str] = mapped_column(String(20000))
     amount: Mapped[Decimal] = mapped_column(Numeric(12,2))
     status: Mapped[str] = mapped_column(String(40), default='creating')
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     reservation_active: Mapped[bool] = mapped_column(default=False, server_default='0')
     price_snapshot: Mapped[str | None] = mapped_column(String(20000), nullable=True)
     review_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -1034,7 +1038,7 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
         if data.payment_method == 'mercado_pago':
             intent = db.scalar(select(PaymentIntent).where(PaymentIntent.id == data.payment_intent_id,
                 PaymentIntent.empresa_id == user.empresa_id, PaymentIntent.actor_id == user.id).with_for_update())
-            if intent is None or intent.status != 'approved' or intent.review_reason:
+            if intent is None or intent.status != 'approved' or intent.review_reason or intent.cancel_requested_at:
                 raise HTTPException(409, 'El pago integrado no está confirmado')
             original = json.loads(intent.payload)
             comparable = data.model_dump(mode='json', exclude={'approval','payment_intent_id'})
@@ -1736,7 +1740,9 @@ from . import mercado_pago as mp
 
 def intent_view(intent):
     return {'id': intent.id, 'amount': str(intent.amount), 'status': intent.status, 'actor_id': intent.actor_id,
-            'checkout_url': intent.checkout_url, 'payment_id': intent.payment_id,
+            'checkout_url': None if intent.cancel_requested_at else intent.checkout_url, 'payment_id': intent.payment_id,
+            'cancellation_pending': bool(intent.cancel_requested_at and not intent.cancelled_at),
+            'cancelled_at': intent.cancelled_at.isoformat() if intent.cancelled_at else None,
             'created_at': intent.created_at.isoformat(), 'reserved': intent.reservation_active,
             'review_reason': intent.review_reason}
 
@@ -1782,7 +1788,9 @@ def create_payment_checkout(data: SaleIn, idempotency_key: str = Header(min_leng
     result=mp.call('POST','/checkout/preferences',{'external_reference':intent_id,
         'items':[{'id':intent_id,'title':'LI Punto de Venta · compra','quantity':1,'currency_id':'MXN','unit_price':float(Decimal(quoted['total']))}],
         'notification_url':config['url']+'/api/payments/webhook',
-        'back_urls':{s:config['url']+'/' for s in ('success','pending','failure')},'auto_return':'approved'},key=intent_id)
+        'back_urls':{s:config['url']+'/' for s in ('success','pending','failure')},'auto_return':'approved',
+        'expires':True,'expiration_date_from':datetime.now(timezone.utc).isoformat(),
+        'expiration_date_to':(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat()},key=intent_id)
     url=result.get('init_point' if config['live'] else 'sandbox_init_point')
     from urllib.parse import urlparse
     parsed=urlparse(url or '')
@@ -1807,6 +1815,13 @@ def apply_provider_payment(payment):
         db.scalar(select(Branch).where(Branch.id==intent.branch_id).with_for_update())
         intent=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent.id).with_for_update().execution_options(populate_existing=True))
         pid=str(payment['id'])
+        if intent.cancel_requested_at:
+            if not intent.payment_id:
+                intent.payment_id = pid
+            if payment.get('status') not in ('cancelled', 'rejected') and (intent.cancelled_at or payment.get('status') not in ('pending','in_process','authorized')):
+                intent.review_reason = 'Pago durante o después de cancelación: '+pid[:100]+' · '+str(payment.get('status'))[:40]
+            db.commit()
+            return intent_view(intent)
         if intent.payment_id and intent.payment_id!=pid:
             intent.review_reason='Otro pago detectado: '+pid[:100]
             db.commit()
@@ -1878,6 +1893,126 @@ def reconcile_integrated_payment(intent_id: str, user: User = Depends(identity))
         return intent_view(intent)
 
 
+class CancelCheckoutIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    reason: str = Field(min_length=3, max_length=300)
+
+
+def validate_cancel_payment(payment, intent, config):
+    if (str(payment.get('external_reference')) != intent.id
+        or str(payment.get('collector_id')) != config['collector']
+        or payment.get('currency_id') != 'MXN'
+        or Decimal(str(payment.get('transaction_amount', 0))) != intent.amount
+        or payment.get('live_mode') is not config['live']):
+        raise HTTPException(409, 'Pago fuera de la operación; reserva conservada')
+
+
+def verified_payment_ids(intent_id, known_id):
+    from urllib.parse import urlencode
+    result = mp.call('GET', '/v1/payments/search?' + urlencode({'external_reference': intent_id, 'limit': 100}))
+    rows = result.get('results')
+    if not isinstance(rows, list) or result.get('paging', {}).get('total', len(rows)) > len(rows):
+        raise HTTPException(409, 'Búsqueda incompleta; reserva conservada')
+    ids = set()
+    for row in rows:
+        if str(row.get('external_reference')) != intent_id or not str(row.get('id', '')).isdigit():
+            raise HTTPException(502, 'Respuesta de pagos inválida; reserva conservada')
+        ids.add(str(row['id']))
+    if known_id:
+        ids.add(known_id)
+    return ids
+
+
+@app.post('/api/payments/{intent_id}/cancel')
+def cancel_payment_checkout(intent_id: str, data: CancelCheckoutIn, user: User = Depends(identity)):
+    require(user, 'sale')
+    config = mp.settings()
+    with Session(engine) as db:
+        intent = db.scalar(select(PaymentIntent).where(PaymentIntent.id == intent_id,
+            PaymentIntent.empresa_id == user.empresa_id))
+        if intent is None or (intent.actor_id != user.id and user.role not in ('admin_general','admin_sucursal')):
+            raise HTTPException(404, 'Cobro no encontrado')
+        branch_for(db, user, intent.branch_id)
+        if intent.empresa_id != config['company']:
+            raise HTTPException(403, 'Cuenta de pagos fuera de esta empresa')
+        db.scalar(select(Branch).where(Branch.id == intent.branch_id).with_for_update())
+        intent = db.scalar(select(PaymentIntent).where(PaymentIntent.id == intent_id)
+            .with_for_update().execution_options(populate_existing=True))
+        if intent.cancelled_at:
+            return intent_view(intent)
+        if intent.status in ('approved', 'completed') or intent.review_reason:
+            raise HTTPException(409, 'Pago aprobado o con incidencia: requiere conciliación, no cancelación de checkout')
+        if not intent.cancel_requested_at:
+            intent.cancel_requested_at = datetime.now(timezone.utc)
+            intent.cancel_reason = data.reason
+            intent.cancel_actor_id = user.id
+            intent.status = 'cancel_pending'
+            db.add(Audit(empresa_id=user.empresa_id, branch_id=intent.branch_id,
+                actor_id=user.id, action='checkout_cancel_requested', record_id=user.id))
+        db.commit()
+        # Durable cancellation blocks ticket issuance before any remote mutation.
+        db.refresh(intent)
+        db.expunge(intent)
+    preference_id = intent.preference_id
+    if not preference_id:
+        from urllib.parse import urlencode
+        result = mp.call('GET', '/checkout/preferences/search?' + urlencode({'external_reference': intent.id}))
+        elements = result.get('elements', [])
+        if len(elements) != 1 or result.get('total', len(elements)) != 1:
+            raise HTTPException(409, 'Preferencia no localizada de forma única; reserva conservada. Reintenta consultar después')
+        preference_id = str(elements[0]['id'])
+    from urllib.parse import quote
+    path = '/checkout/preferences/' + quote(preference_id, safe='')
+    preference = mp.call('GET', path)
+    if str(preference.get('external_reference')) != intent.id or str(preference.get('collector_id')) != config['collector']:
+        raise HTTPException(409, 'Preferencia fuera de la operación; reserva conservada')
+    deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
+    mp.call('PUT', path, {'expires': True, 'expiration_date_from': (deadline-timedelta(days=1)).isoformat(),
+        'expiration_date_to': deadline.isoformat()}, key='cancel-pref-'+intent.id)
+    verified = mp.call('GET', path)
+    try:
+        expires_at = datetime.fromisoformat(verified.get('expiration_date_to','').replace('Z','+00:00'))
+        disabled = (verified.get('expires') is True and expires_at.tzinfo is not None
+            and expires_at <= datetime.now(timezone.utc)
+            and str(verified.get('external_reference')) == intent.id
+            and str(verified.get('collector_id')) == config['collector'])
+    except (ValueError, TypeError):
+        disabled = False
+    if not disabled:
+        raise HTTPException(409, 'Proveedor no confirmó cierre del enlace; reserva conservada')
+    checked = set()
+    # Search again after pending payments are cancelled to catch another attempt.
+    for _ in range(2):
+        ids = verified_payment_ids(intent.id, intent.payment_id)
+        for pid in sorted(ids):
+            payment = mp.call('GET', '/v1/payments/'+pid)
+            validate_cancel_payment(payment, intent, config)
+            if payment.get('status') in ('pending','in_process','authorized'):
+                mp.call('PUT', '/v1/payments/'+pid, {'status':'cancelled'}, key='cancel-pay-'+intent.id+'-'+pid)
+                payment = mp.call('GET', '/v1/payments/'+pid)
+                validate_cancel_payment(payment, intent, config)
+            if payment.get('status') not in ('cancelled','rejected'):
+                apply_provider_payment(payment)
+                raise HTTPException(409, 'El pago no está cancelado; reserva conservada y requiere conciliación')
+            checked.add(pid)
+    with Session(engine) as db:
+        db.scalar(select(Branch).where(Branch.id == intent.branch_id).with_for_update())
+        current = db.scalar(select(PaymentIntent).where(PaymentIntent.id == intent.id).with_for_update())
+        if current.cancelled_at:
+            return intent_view(current)
+        if current.review_reason or current.status in ('approved','completed') or (current.payment_id and current.payment_id not in checked):
+            raise HTTPException(409, 'Cambió el pago durante cancelación; reserva conservada')
+        current.preference_id = preference_id
+        current.status = 'cancelled'
+        current.cancelled_at = datetime.now(timezone.utc)
+        current.reservation_active = False
+        current.checkout_url = None
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=current.branch_id,
+            actor_id=user.id, action='checkout_cancelled', record_id=user.id))
+        db.commit()
+        return intent_view(current)
+
+
 @app.post('/api/payments/{intent_id}/confirm')
 def confirm_integrated_sale(intent_id:str,user:User=Depends(identity)):
     require(user,'sale')
@@ -1903,6 +2038,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
     if 'stock' in inspect(engine).get_table_names() and 'payment_intents' not in inspect(engine).get_table_names():
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'payment_intents' in inspect(engine).get_table_names() and 'reservation_active' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'payment_intents' in inspect(engine).get_table_names() and 'cancel_requested_at' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

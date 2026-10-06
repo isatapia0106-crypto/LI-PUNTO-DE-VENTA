@@ -417,7 +417,20 @@ async function loadIntegratedPayments(){
  if(p.checkout_url&&['creating','pending','in_process','rejected'].includes(p.status)){const link=node('a','Abrir Checkout');link.href=p.checkout_url;link.target='_blank';link.rel='noopener noreferrer';row.append(link);}
  if(p.actor_id===me.id&&!p.review_reason&&p.payment_id&&['approved','completed'].includes(p.status))row.append(button(p.status==='completed'?'Ver ticket confirmado':'Confirmar pago y emitir ticket',async()=>{const sale=await post(`/api/payments/${p.id}/confirm`,{});await refresh();await showReceipt(sale.id);}));
  row.append(button('Consultar proveedor',async()=>{await post(`/api/payments/${p.id}/reconcile`,{});await refresh();notice('Consulta del proveedor terminada.');}));
+ if(!p.cancelled_at&&!p.review_reason&&!['approved','completed'].includes(p.status)&&(p.actor_id===me.id||['admin_general','admin_sucursal'].includes(me.role)))row.append(button(p.cancellation_pending?'Reintentar cancelación':'Cancelar checkout',async()=>{checkoutCancelId=p.id;$('checkoutCancelReason').value='';$('checkoutCancelError').textContent='';$('checkoutCancelDialog').showModal();}));
+ if(p.cancelled_at)row.append(node('small','Checkout cancelado · reserva liberada'));
+ if(p.cancellation_pending)row.append(node('small','Cancelación pendiente · reserva conservada'));
  if(p.reserved)row.append(node('small','Inventario reservado'));
  if(p.review_reason)row.append(node('strong',`Requiere revisión: ${p.review_reason}`));
  return row;}));
 }
+
+let checkoutCancelId=null, checkoutCancelling=false;
+$('checkoutCancelBack').onclick=()=>{if(!checkoutCancelling)$('checkoutCancelDialog').close();};
+$('checkoutCancelDialog').addEventListener('cancel',e=>{if(checkoutCancelling)e.preventDefault();});
+$('checkoutCancelForm').onsubmit=async e=>{
+ e.preventDefault();if(checkoutCancelling)return;checkoutCancelling=true;$('checkoutCancelSubmit').disabled=true;
+ try{await post(`/api/payments/${checkoutCancelId}/cancel`,{reason:$('checkoutCancelReason').value.trim()});$('checkoutCancelDialog').close();await refresh();notice('Checkout cancelado. Reserva liberada.');}
+ catch(err){$('checkoutCancelError').textContent=err.message;await refresh().catch(()=>{});}
+ finally{checkoutCancelling=false;$('checkoutCancelSubmit').disabled=false;}
+};

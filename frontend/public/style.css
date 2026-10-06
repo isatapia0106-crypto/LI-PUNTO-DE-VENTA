@@ -316,3 +316,5 @@
 @media screen and (max-width:560px){.return-line{grid-template-columns:1fr}}
 
 .report-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.stock-alert{border-left:3px solid #e8b64e}#userBranches{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#usersList .sale{justify-content:space-between}#userError,#minimumError{color:#ffb4ab}@media screen and (max-width:650px){.report-filters,#userBranches{grid-template-columns:1fr}}
+
+#checkoutCancelDialog textarea{display:block;width:100%;min-height:90px;background:#2d3035;color:#fff;border:1px solid #4b535f;border-radius:9px;padding:12px;font:inherit;resize:vertical}#checkoutCancelDialog .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px}#checkoutCancelError{color:#ffb4b4}
