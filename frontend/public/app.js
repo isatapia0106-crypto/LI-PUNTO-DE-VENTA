@@ -131,8 +131,8 @@ async function refreshCash(){
   $('openControls').hidden=cash.open||!can('cash_open');$('closeControls').hidden=!cash.open||!can('cash_close')||(!own&&!manager);
   $('cashMovementForm').hidden=!cash.open||!manager;$('newRegister').hidden=!manager;
   const moves=cash.open&&(own||manager)?await request(`/api/cash/${cash.id}/movements`):[];
-  $('cashMovements').replaceChildren(...moves.map(m=>{const row=node('div',undefined,'sale');row.append(node('span',`#${m.id} · ${m.kind==='deposit'?'Entrada':'Retiro'} · ${pesos(m.amount)} · ${m.reason}`),button('Comprobante',()=>showText(`LI PUNTO DE VENTA\n${branches.find(b=>b.id===branchId()).name}\n${cash.register_name} · Turno #${m.session_id}\nMovimiento #${m.id}\n${fecha(m.created_at)}\n${m.kind==='deposit'?'Entrada':'Retiro'}: ${pesos(m.amount)}\nMotivo: ${m.reason}\nAutorizado por usuario #${m.actor_id}`)));return row;}));
-  $('cashSessions').replaceChildren(...sessions.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.register_name} · Turno #${s.id} · ${s.cashier_name} · ${s.open?'Abierto':'Cerrado'} · Esperado ${pesos(s.expected)}${s.counted===null?'':` · Diferencia ${pesos(Number(s.counted)-Number(s.expected))}`}`),button('Ver corte',()=>showText(`LI PUNTO DE VENTA\nTurno #${s.id} · ${s.register_name}\nCajero: ${s.cashier_name}\nApertura: ${fecha(s.opened_at)}\n${s.closed_at?`Cierre: ${fecha(s.closed_at)}`:'Turno abierto'}\nFondo: ${pesos(s.opening)}\nEntradas: ${pesos(s.deposited)}\nRetiros: ${pesos(s.withdrawn)}\nEsperado: ${pesos(s.expected)}\nContado: ${s.counted===null?'Pendiente':pesos(s.counted)}\nDiferencia: ${s.counted===null?'Pendiente':pesos(Number(s.counted)-Number(s.expected))}`)));return row;}));
+  $('cashMovements').replaceChildren(...moves.map(m=>{const row=node('div',undefined,'sale');row.append(node('span',`#${m.id} · ${m.kind==='deposit'?'Entrada':m.kind==='refund'?'Reembolso':'Retiro'} · ${pesos(m.amount)} · ${m.reason}`),button('Comprobante',()=>showText(`LI PUNTO DE VENTA\n${branches.find(b=>b.id===branchId()).name}\n${cash.register_name} · Turno #${m.session_id}\nMovimiento #${m.id}\n${fecha(m.created_at)}\n${m.kind==='deposit'?'Entrada':m.kind==='refund'?'Reembolso':'Retiro'}: ${pesos(m.amount)}\nMotivo: ${m.reason}\nAutorizado por usuario #${m.actor_id}`)));return row;}));
+  $('cashSessions').replaceChildren(...sessions.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.register_name} · Turno #${s.id} · ${s.cashier_name} · ${s.open?'Abierto':'Cerrado'} · Esperado ${pesos(s.expected)}${s.counted===null?'':` · Diferencia ${pesos(Number(s.counted)-Number(s.expected))}`}`),button('Ver corte',()=>showText(`LI PUNTO DE VENTA\nTurno #${s.id} · ${s.register_name}\nCajero: ${s.cashier_name}\nApertura: ${fecha(s.opened_at)}\n${s.closed_at?`Cierre: ${fecha(s.closed_at)}`:'Turno abierto'}\nFondo: ${pesos(s.opening)}\nEntradas: ${pesos(s.deposited)}\nRetiros: ${pesos(s.withdrawn)}\nReembolsos: ${pesos(s.refunded??0)}\nEsperado: ${pesos(s.expected)}\nContado: ${s.counted===null?'Pendiente':pesos(s.counted)}\nDiferencia: ${s.counted===null?'Pendiente':pesos(Number(s.counted)-Number(s.expected))}`)));return row;}));
 }
 function showText(text){receiptText=text;$('receiptContent').textContent=text;$('receiptDialog').showModal();}
 async function showReceipt(id){const s=await request(`/api/sales/${id}`);showText(['LI PUNTO DE VENTA',s.branch_name,`Ticket ${s.folio??s.id}`,`Turno #${s.cash_session_id}`,fecha(s.created_at),s.customer_name??'Público general','',
@@ -155,8 +155,8 @@ async function refresh(){if(!branchId())return;
   products=await request(`/api/products?branch_id=${branchId()}`);drawProducts();drawInventory();
   const jobs=[];
   if(can('cash_open')||can('report'))jobs.push(refreshCash());
-  if(can('sale')||can('report'))jobs.push((async()=>{const sales=await request(`/api/sales?branch_id=${branchId()}`);$('sales').replaceChildren(...sales.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.folio??'#'+s.id} · ${fecha(s.created_at)}`),node('b',pesos(s.total)),button('Ticket',()=>showReceipt(s.id)));return row;}));})());
-  if(can('report'))jobs.push((async()=>{const s=await request(`/api/reports/summary?branch_id=${branchId()}`);$('summary').textContent=`${s.sales_count} ventas · ${pesos(s.total)} · Efectivo ${pesos(s.by_method.cash)}`;})());else $('summary').textContent='Disponible para supervisión';
+  if(can('sale')||can('report'))jobs.push((async()=>{const sales=await request(`/api/sales?branch_id=${branchId()}`);$('sales').replaceChildren(...sales.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.folio??'#'+s.id} · ${fecha(s.created_at)}`),node('b',pesos(s.total)),button('Ticket',()=>showReceipt(s.id)),button('Devoluciones',()=>openReturn(s.id)));return row;}));})());
+  if(can('report'))jobs.push((async()=>{const s=await request(`/api/reports/summary?branch_id=${branchId()}`);$('summary').textContent=`${s.sales_count} ventas · ${pesos(s.total)} neto de devoluciones · Efectivo ${pesos(s.by_method.cash)}`;})());else $('summary').textContent='Disponible para supervisión';
   if(can('purchase_read')||can('purchase_write'))jobs.push(refreshPurchases());
   if(can('stock_write'))jobs.push((async()=>{const rows=await request(`/api/stock/movements?branch_id=${branchId()}`);$('movements').replaceChildren(...rows.map(m=>node('div',`Producto #${m.product_id} · ${m.change>0?'+':''}${m.change} · ${m.reason} · Referencia ${m.reference_id??'—'} · Usuario #${m.actor_id??'—'} · ${fecha(m.created_at)}`,'sale')));})());
   if(can('stock_write')||can('report'))jobs.push((async()=>{const rows=await request(`/api/stock/counts?branch_id=${branchId()}`);$('counts').replaceChildren(...rows.map(c=>node('div',`Conteo #${c.id} · Producto #${c.product_id} · Sistema ${c.expected} · Contado ${c.counted} · Diferencia ${c.difference} · ${c.reason}`,'sale')));})());
@@ -300,3 +300,52 @@ document.querySelectorAll('[data-reset-search]').forEach(button=>button.onclick=
 });
 
 $('loginDialog').addEventListener('cancel',e=>e.preventDefault());$('loginDialog').showModal();
+
+
+let returnSale=null, savingReturn=false;
+async function openReturn(id){
+ const sale=await request(`/api/sales/${id}`),history=await request(`/api/sales/${id}/returns`);
+ if(!can('sale_return')){showText(['DEVOLUCIONES',`Ticket ${sale.folio??sale.id}`,...history.map(r=>`Devolución #${r.id} · ${fecha(r.created_at)} · ${pesos(r.total)} · ${r.reason}`),...(!history.length?['Sin devoluciones']:[])].join('\n'));return;}
+ returnSale=sale;$('returnForm').reset();$('returnError').textContent='';
+ $('returnSaleInfo').textContent=`${sale.folio??'#'+sale.id} · Total original ${pesos(sale.total)} · ${history.length} devoluciones registradas`;
+ $('returnHistory').replaceChildren(...history.map(r=>node('div',`Devolución #${r.id} · ${pesos(r.total)} · ${r.reason} · ${fecha(r.created_at)}`,'sale')));
+ $('returnLines').replaceChildren(...sale.items.map(i=>{
+  const remaining=i.quantity-i.returned_quantity,row=node('div',undefined,'return-line');
+  const label=node('label',`${i.name} · Vendidos ${i.quantity} · Pendientes ${remaining}`),qty=node('input');
+  qty.type='number';qty.min='0';qty.max=String(remaining);qty.step='1';qty.value='0';qty.dataset.itemId=i.id;qty.disabled=!remaining||i.refundable_total===null;qty.addEventListener('input',updateReturnTotal);label.append(qty);
+  const restockLabel=node('label','Reintegrar al inventario','check'),restock=node('input');restock.type='checkbox';restock.checked=true;restock.dataset.restockId=i.id;restock.disabled=!remaining;restockLabel.prepend(restock);
+  row.append(label,restockLabel);return row;
+ }));
+ const cash=sale.payment_method==='cash';$('returnCashLabel').hidden=!cash;$('returnReferenceLabel').hidden=cash;$('returnReference').required=!cash;
+ $('returnPaymentHelp').textContent=cash?'El efectivo se descontará del turno seleccionado. Revisa y entrega el reembolso al confirmar.':'Realiza primero el reembolso en el proveedor de pago y registra su referencia. Esta aplicación no envía dinero ni cancela CFDI.';
+ if(cash){const turns=await request(`/api/cash/sessions?branch_id=${sale.branch_id}`);options('returnCash',turns.filter(t=>t.open),t=>`Turno #${t.id} · ${t.register_name} · ${t.cashier_name} · Disponible ${pesos(t.expected)}`);}
+ updateReturnTotal();
+ $('saveReturn').disabled=!sale.items.some(i=>i.quantity>i.returned_quantity&&i.refundable_total!==null)||(cash&&!$('returnCash').value);$('returnDialog').showModal();
+}
+$('cancelReturn').onclick=()=>{if(!savingReturn)$('returnDialog').close();};
+$('returnDialog').addEventListener('cancel',e=>{if(savingReturn)e.preventDefault();});
+$('returnForm').onsubmit=async e=>{
+ e.preventDefault();if(savingReturn||!returnSale)return;
+ const sale=returnSale,items=[...$('returnLines').querySelectorAll('[data-item-id]')].filter(i=>Number(i.value)>0).map(i=>({sale_item_id:Number(i.dataset.itemId),quantity:Number(i.value),restock:$('returnLines').querySelector(`[data-restock-id="${i.dataset.itemId}"]`).checked}));
+ if(!items.length){$('returnError').textContent='Selecciona al menos una unidad.';return;}
+ if(!confirm('¿Confirmar la devolución y registrar el reembolso?'))return;
+ const data={reason:$('returnReason').value.trim(),items,cash_session_id:sale.payment_method==='cash'?Number($('returnCash').value):null,payment_reference:sale.payment_method==='cash'?null:$('returnReference').value.trim()};
+ savingReturn=true;for(const el of $('returnForm').elements)el.disabled=true;$('returnError').textContent='';
+ try{const r=await post(`/api/sales/${sale.id}/returns`,data,true);$('returnDialog').close();returnSale=null;
+  notice(`Devolución #${r.id} registrada por ${pesos(r.total)}`);
+  try{await refresh();}catch(error){notice('Devolución guardada. Actualiza la pantalla: '+error.message);}
+  showText(['LI PUNTO DE VENTA',`Devolución #${r.id}`,`Ticket original ${sale.folio??sale.id}`,fecha(r.created_at),`Motivo: ${r.reason}`,`Autorizó usuario #${r.actor_id}`,
+   ...r.items.map(i=>`${sale.items.find(x=>x.id===i.sale_item_id).name} · ${i.quantity} · ${pesos(i.total)} · ${i.restock?'Reintegrado':'Sin reintegro'}`),`Reembolso: ${pesos(r.total)}`,r.cash_session_id?`Efectivo · Turno #${r.cash_session_id}`:`Reembolso externo manual · ${r.payment_reference}`,'Comprobante interno sin CFDI'].join('\n'));
+ }catch(error){$('returnError').textContent=error.message;}finally{savingReturn=false;for(const el of $('returnForm').elements)el.disabled=false;}
+};
+
+function updateReturnTotal(){
+ if(!returnSale)return;let cents=0;
+ for(const input of $('returnLines').querySelectorAll('[data-item-id]')){
+  const item=returnSale.items.find(i=>i.id===Number(input.dataset.itemId)),qty=Number(input.value);
+  if(!Number.isInteger(qty)||qty<0||qty>Number(input.max)){$('returnTotal').textContent='Revisa las cantidades seleccionadas.';return;}
+  const original=Math.round(Number(item.refundable_total??0)*100),previous=item.returned_quantity;
+  cents+=Math.round(original*(previous+qty)/item.quantity)-Math.round(original*previous/item.quantity);
+ }
+ $('returnTotal').textContent='Reembolso: '+pesos(cents/100);
+}

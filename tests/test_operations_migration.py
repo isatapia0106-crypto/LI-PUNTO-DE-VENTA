@@ -47,3 +47,18 @@ def test_upgrade_preserves_old_sale_stock_and_backup(tmp_path):
         assert restored.execute('SELECT version_num FROM alembic_version').fetchone()[0] == 'e1a59c0d35f4'
     command('scripts/migrate_local.py',str(path))
     assert len(list(tmp_path.glob('old.db.backup-*'))) == 1
+
+
+def test_returns_upgrade_unstamped_modern_demo(tmp_path):
+    path=tmp_path/'modern.db'
+    env={**os.environ,'APP_ENV':'production','JWT_SECRET':'migration-test-secret','DATABASE_URL':f'sqlite:///{path}'}
+    def run(*args):
+        r=subprocess.run([sys.executable,*args],cwd=ROOT,env=env,capture_output=True,text=True)
+        assert r.returncode==0,r.stdout+r.stderr
+    run('-m','alembic','upgrade','f2b3409ac871')
+    with sqlite3.connect(path) as db:db.execute('DROP TABLE alembic_version')
+    run('scripts/migrate_local.py',str(path))
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT version_num FROM alembic_version').fetchone()[0]=='a3d7e910c624'
+        assert db.execute('SELECT COUNT(*) FROM sale_returns').fetchone()[0]==0
+        assert db.execute('PRAGMA foreign_key_check').fetchall()==[]

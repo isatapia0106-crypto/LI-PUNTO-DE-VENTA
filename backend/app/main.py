@@ -1,4 +1,5 @@
 import os
+import json
 import secrets
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -192,6 +193,32 @@ class SaleItem(Base):
     tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal('0'))
 
+class SaleReturn(Base):
+    __tablename__ = 'sale_returns'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer, index=True)
+    sale_id: Mapped[int] = mapped_column(ForeignKey('sales.id'))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    cash_session_id: Mapped[int | None] = mapped_column(ForeignKey('cash_sessions.id'), nullable=True)
+    reason: Mapped[str] = mapped_column(String(160))
+    payment_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    payload: Mapped[str] = mapped_column(String(20000))
+    total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    request_key: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    items: Mapped[list['SaleReturnItem']] = relationship(cascade='all, delete-orphan')
+    __table_args__ = (UniqueConstraint('empresa_id', 'request_key'),)
+
+class SaleReturnItem(Base):
+    __tablename__ = 'sale_return_items'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    return_id: Mapped[int] = mapped_column(ForeignKey('sale_returns.id'))
+    sale_item_id: Mapped[int] = mapped_column(ForeignKey('sale_items.id'))
+    quantity: Mapped[int] = mapped_column(Integer)
+    restock: Mapped[bool] = mapped_column(default=True)
+    total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    __table_args__ = (UniqueConstraint('return_id', 'sale_item_id'),)
+
 class Supplier(Base):
     __tablename__ = 'suppliers'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -358,8 +385,8 @@ if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(48)  # Transient local key; restarts invalidate sessions.
 
 ROLE_ACTIONS = {
-    'admin_general': {'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
-    'admin_sucursal': {'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
+    'admin_general': {'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
+    'admin_sucursal': {'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
     'cajero': {'sale', 'customer_read', 'customer_write', 'cash_open', 'cash_close'},
     'almacenista': {'stock_write', 'purchase_read', 'purchase_receive'},
     'supervisor_inventarios': {'stock_write', 'report', 'purchase_read', 'purchase_receive', 'count_write'},
@@ -454,8 +481,9 @@ def cash_totals(db, session):
     movements = db.scalars(select(CashMovement).where(CashMovement.session_id == session.id)).all()
     withdrawn = sum((m.amount for m in movements if m.kind == 'withdrawal'), Decimal('0'))
     deposited = sum((m.amount for m in movements if m.kind == 'deposit'), Decimal('0'))
-    expected = money(session.opening + sum((s.total for s in sales), Decimal('0')) + deposited - withdrawn)
-    return {'expected': str(expected), 'withdrawn': str(money(withdrawn)), 'deposited': str(money(deposited)), 'cash_sales': len(sales)}
+    refunded = sum((m.amount for m in movements if m.kind == 'refund'), Decimal('0'))
+    expected = money(session.opening + sum((s.total for s in sales), Decimal('0')) + deposited - withdrawn - refunded)
+    return {'expected': str(expected), 'withdrawn': str(money(withdrawn)), 'deposited': str(money(deposited)), 'cash_sales': len(sales), 'refunded': str(money(refunded))}
 
 
 def cash_view(db, session):
@@ -1000,7 +1028,9 @@ def sale_detail(sale_id: int, user: User = Depends(identity)):
             'subtotal': str(sale.subtotal), 'tax': str(sale.tax), 'total': str(sale.total),
             'paid': str(sale.paid), 'change': str(money(sale.paid - sale.total)),
             'items': [
-                {'product_id': item.product_id, 'name': item.name, 'quantity': item.quantity,
+                {'id': item.id, 'product_id': item.product_id, 'name': item.name, 'quantity': item.quantity,
+                 'returned_quantity': returned_quantities(db, sale.id).get(item.id, 0),
+                 'refundable_total': str(refundable_line_total(sale, item)) if item.net_amount is not None or not sale.discount_total else None,
                  'unit_price': str(item.unit_price), 'unit': item.unit, 'tax_rate': str(item.tax_rate), 'tax_exempt': item.tax_exempt,
                  'discount': str(item.discount_amount), 'net': str(item.net_amount) if item.net_amount is not None else None,
                  'tax': str(item.tax_amount) if item.tax_amount is not None else None,
@@ -1009,6 +1039,135 @@ def sale_detail(sale_id: int, user: User = Depends(identity)):
             ],
         }
 
+class ReturnLine(BaseModel):
+    sale_item_id: int = Field(gt=0)
+    quantity: int = Field(gt=0, le=10000)
+    restock: bool = True
+
+class ReturnIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    reason: str = Field(min_length=3, max_length=160)
+    cash_session_id: int | None = Field(default=None, gt=0)
+    payment_reference: str | None = Field(default=None, max_length=100)
+    items: list[ReturnLine] = Field(min_length=1, max_length=100)
+
+
+def returned_quantities(db, sale_id):
+    rows = db.scalars(select(SaleReturnItem).join(SaleReturn).where(SaleReturn.sale_id == sale_id)).all()
+    totals = {}
+    for item in rows:
+        totals[item.sale_item_id] = totals.get(item.sale_item_id, 0) + item.quantity
+    return totals
+
+
+def return_view(record, replayed=False):
+    return {'id': record.id, 'sale_id': record.sale_id, 'total': str(record.total),
+            'reason': record.reason, 'actor_id': record.actor_id, 'cash_session_id': record.cash_session_id,
+            'payment_reference': record.payment_reference, 'created_at': record.created_at.isoformat(),
+            'items': [{'sale_item_id': x.sale_item_id, 'quantity': x.quantity, 'restock': x.restock,
+                       'total': str(x.total)} for x in record.items], 'replayed': replayed}
+
+
+def refundable_line_total(sale, item):
+    if item.net_amount is not None and item.tax_amount is not None:
+        return item.net_amount + item.tax_amount
+    # Legacy tickets lack stored line taxes. Allocate the original total; refuse
+    # discounted legacy records whose allocation cannot be established reliably.
+    if sale.discount_total:
+        raise HTTPException(409, 'Venta antigua sin desglose: requiere revisión de administración')
+    gross = sum((x.unit_price * x.quantity for x in sale.items), Decimal('0'))
+    if gross <= 0:
+        raise HTTPException(409, 'Venta antigua sin importes válidos')
+    ordered = sorted(sale.items, key=lambda x: x.id)
+    before = sum((x.unit_price * x.quantity for x in ordered if x.id < item.id), Decimal('0'))
+    return money(sale.total * (before + item.unit_price * item.quantity) / gross) - money(sale.total * before / gross)
+
+
+@app.get('/api/sales/{sale_id}/returns')
+def sale_returns(sale_id: int, user: User = Depends(identity)):
+    require_any(user, 'sale', 'report', 'sale_return')
+    with Session(engine) as db:
+        sale = db.scalar(select(Sale).where(Sale.id == sale_id, Sale.empresa_id == user.empresa_id))
+        if sale is None:
+            raise HTTPException(404, 'Venta no encontrada')
+        branch_for(db, user, sale.branch_id)
+        return [return_view(r) for r in db.scalars(select(SaleReturn).where(SaleReturn.sale_id == sale.id).order_by(SaleReturn.id.desc()))]
+
+
+@app.post('/api/sales/{sale_id}/returns', status_code=201)
+def create_return(sale_id: int, data: ReturnIn, idempotency_key: str = Header(min_length=8, max_length=100), user: User = Depends(identity)):
+    require(user, 'sale_return')
+    ids = [x.sale_item_id for x in data.items]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(422, 'Partidas duplicadas')
+    payload = json.dumps({'sale_id': sale_id, **data.model_dump(mode='json'),
+                          'items': sorted([x.model_dump() for x in data.items], key=lambda x: x['sale_item_id'])}, sort_keys=True)
+    with Session(engine) as db:
+        sale = db.scalar(select(Sale).where(Sale.id == sale_id, Sale.empresa_id == user.empresa_id))
+        if sale is None:
+            raise HTTPException(404, 'Venta no encontrada')
+        branch_for(db, user, sale.branch_id)
+        # Same lock order as checkout: branch, cash, stock. Serializes returns
+        # against each other and against checkout in this branch on PostgreSQL.
+        db.scalar(select(Branch).where(Branch.id == sale.branch_id).with_for_update())
+        existing = db.scalar(select(SaleReturn).where(SaleReturn.empresa_id == user.empresa_id, SaleReturn.request_key == idempotency_key))
+        if existing:
+            if existing.actor_id != user.id or existing.payload != payload:
+                raise HTTPException(409, 'Clave de devolución utilizada para otra operación')
+            return return_view(existing, True)
+        cash = None
+        if sale.payment_method == 'cash':
+            cash = db.scalar(select(CashSession).where(CashSession.id == data.cash_session_id,
+                CashSession.empresa_id == user.empresa_id, CashSession.branch_id == sale.branch_id).with_for_update())
+            if cash is None or cash.status != 'open':
+                raise HTTPException(409, 'Selecciona un turno abierto de la misma sucursal para reembolsar')
+        elif not data.payment_reference:
+            raise HTTPException(422, 'Indica la referencia del reembolso externo realizado')
+        elif data.cash_session_id is not None:
+            raise HTTPException(422, 'Un reembolso externo no debe afectar efectivo')
+        already = returned_quantities(db, sale.id)
+        by_id = {x.id: x for x in sale.items}
+        lines, total = [], Decimal('0')
+        for incoming in data.items:
+            item = by_id.get(incoming.sale_item_id)
+            if item is None:
+                raise HTTPException(422, 'Partida fuera de esta venta')
+            previous = already.get(item.id, 0)
+            if previous + incoming.quantity > item.quantity:
+                raise HTTPException(409, 'La cantidad supera lo pendiente por devolver')
+            original = refundable_line_total(sale, item)
+            # Cumulative rounding leaves no lost/extra cents over partial returns.
+            amount = money(original * (previous + incoming.quantity) / item.quantity) - money(original * previous / item.quantity)
+            total += amount
+            lines.append(SaleReturnItem(sale_item_id=item.id, quantity=incoming.quantity, restock=incoming.restock, total=amount))
+        if cash and Decimal(cash_totals(db, cash)['expected']) < total:
+            raise HTTPException(409, 'Efectivo insuficiente en el turno para el reembolso')
+        record = SaleReturn(empresa_id=user.empresa_id, sale_id=sale.id, actor_id=user.id,
+            cash_session_id=cash.id if cash else None, reason=data.reason, payment_reference=data.payment_reference,
+            payload=payload, total=total, request_key=idempotency_key, items=lines)
+        db.add(record)
+        db.flush()
+        for incoming in sorted(data.items, key=lambda x: by_id[x.sale_item_id].product_id):
+            if not incoming.restock:
+                continue
+            item = by_id[incoming.sale_item_id]
+            stock = db.scalar(select(Stock).where(Stock.product_id == item.product_id, Stock.branch_id == sale.branch_id).with_for_update())
+            if stock is None:
+                raise HTTPException(409, 'Existencia de la venta no encontrada; revisa el inventario')
+            new_quantity = stock.quantity + incoming.quantity
+            stock.average_cost = ((stock.average_cost * stock.quantity + item.cost * incoming.quantity) / new_quantity).quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
+            stock.quantity = new_quantity
+            db.add(StockMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, product_id=item.product_id,
+                actor_id=user.id, change=incoming.quantity, reason='sale_return', reference_id=record.id))
+        if cash:
+            db.add(CashMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, session_id=cash.id,
+                actor_id=user.id, amount=total, kind='refund', reason=f'Devolución #{record.id}: {data.reason}'[:160]))
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=sale.branch_id, actor_id=user.id, action='sale_return', record_id=record.id))
+        db.flush()
+        result = return_view(record)
+        db.commit()
+        return result
+
 @app.get('/api/reports/summary')
 def summary(branch_id: int, user: User = Depends(identity)):
     require(user, 'report')
@@ -1016,8 +1175,11 @@ def summary(branch_id: int, user: User = Depends(identity)):
     with Session(engine) as db:
         branch_for(db, user, branch_id)
         rows = db.scalars(select(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id)).all()
-        by_method = {method: str(money(sum((s.total for s in rows if s.payment_method == method), Decimal('0')))) for method in ('cash', 'card', 'transfer')}
-        return {'branch_id': branch_id, 'sales_count': len(rows), 'total': str(money(sum((s.total for s in rows), Decimal('0')))), 'by_method': by_method}
+        returns = db.scalars(select(SaleReturn).join(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id)).all()
+        methods = {s.id: s.payment_method for s in rows}
+        refunded = sum((r.total for r in returns), Decimal('0'))
+        by_method = {method: str(money(sum((s.total for s in rows if s.payment_method == method), Decimal('0')) - sum((r.total for r in returns if methods[r.sale_id] == method), Decimal('0')))) for method in ('cash', 'card', 'transfer')}
+        return {'branch_id': branch_id, 'sales_count': len(rows), 'gross_total': str(money(sum((s.total for s in rows), Decimal('0')))), 'returns_total': str(money(refunded)), 'total': str(money(sum((s.total for s in rows), Decimal('0')) - refunded)), 'by_method': by_method}
 
 class SupplierIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -1247,6 +1409,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
         raise RuntimeError('Base demo anterior: ejecuta python scripts/upgrade_demo_sqlite.py pos.db')
     if 'products' in inspect(engine).get_table_names() and 'barcode' not in {c['name'] for c in inspect(engine).get_columns('products')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'products' in inspect(engine).get_table_names() and 'sale_returns' not in inspect(engine).get_table_names():
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:
         if not db.scalar(select(Branch.id).where(Branch.empresa_id == 1).limit(1)):
@@ -1261,4 +1425,5 @@ app.mount('/assets', StaticFiles(directory=frontend), name='assets')
 @app.get('/')
 def home():
     return FileResponse(frontend / 'index.html')
+
 

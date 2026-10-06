@@ -306,3 +306,11 @@
 }
 @media screen and (max-width:850px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media screen and (max-width:359px){.metric-grid{grid-template-columns:minmax(0,1fr)}}
+
+
+/* Devoluciones */
+.return-line{padding:14px 0;border-bottom:1px solid var(--border,#393b40);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center}
+.return-line input[type=number]{max-width:120px}
+#returnLines{max-height:35vh;overflow:auto}
+#returnError{color:#ffb4ab}
+@media screen and (max-width:560px){.return-line{grid-template-columns:1fr}}

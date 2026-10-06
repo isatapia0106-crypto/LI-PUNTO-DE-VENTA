@@ -40,7 +40,11 @@ def migrate(path):
                         'cash_sessions', 'cash_movements', 'stock_movements', 'stock_transfers', 'customers', 'audit_logs'}
             if not required <= names or 'customer_name' not in {x[1] for x in db.execute('PRAGMA table_info(sales)')}:
                 raise SystemExit('Demo antigua no reconocida: consulta SEGURIDAD_Y_MIGRACIONES.md. No se modificó la base.')
+            modern = 'barcode' in {x[1] for x in db.execute('PRAGMA table_info(products)')}
+            if modern and not {'cash_registers', 'suppliers', 'purchases', 'purchase_items', 'purchase_receipts', 'inventory_counts'} <= names:
+                raise SystemExit('Base parcialmente migrada. No se modificó.')
             version = None
+            baseline = 'f2b3409ac871' if modern else 'e1a59c0d35f4'
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise SystemExit('La base tiene errores de integridad. No se modificó.')
         backup = path.with_name(path.name + '.backup-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))
@@ -48,7 +52,7 @@ def migrate(path):
             db.backup(target)
     print(f'Respaldo: {backup}')
     if version is None:
-        command.stamp(cfg, 'e1a59c0d35f4')
+        command.stamp(cfg, baseline)
     command.upgrade(cfg, 'head')
     with sqlite3.connect(path) as db:
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
@@ -59,3 +63,4 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('database', type=Path, nargs='?', default=root / 'pos.db')
     migrate(parser.parse_args().database)
+
