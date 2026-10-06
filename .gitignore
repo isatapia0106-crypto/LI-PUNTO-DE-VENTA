@@ -10,3 +10,6 @@ backups/
 *.db-wal
 *.db-shm
 *.partial
+.env.production
+.env.*.local
+*.dump

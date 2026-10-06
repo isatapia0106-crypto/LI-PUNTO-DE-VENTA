@@ -10,7 +10,7 @@ from pathlib import Path
 import jwt
 from jwt.exceptions import InvalidTokenError
 from pwdlib import PasswordHash
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -157,6 +157,22 @@ class Stock(Base):
     average_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal('0'))
     __table_args__ = (UniqueConstraint('product_id', 'branch_id'),)
 
+class PaymentIntent(Base):
+    __tablename__ = 'payment_intents'
+    id: Mapped[str] = mapped_column(String(60), primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer, index=True)
+    branch_id: Mapped[int] = mapped_column(ForeignKey('branches.id'))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    payload: Mapped[str] = mapped_column(String(20000))
+    amount: Mapped[Decimal] = mapped_column(Numeric(12,2))
+    status: Mapped[str] = mapped_column(String(40), default='creating')
+    preference_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    checkout_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    payment_id: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    request_key: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (UniqueConstraint('empresa_id', 'request_key'),)
+
 class Sale(Base):
     __tablename__ = 'sales'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -302,6 +318,7 @@ class ApprovalIn(BaseModel):
     password: str
 
 class SaleIn(BaseModel):
+    payment_intent_id: str | None = Field(default=None, max_length=60)
     branch_id: int = Field(gt=0)
     customer_id: int | None = Field(default=None, gt=0)
     cash_session_id: int | None = Field(default=None, gt=0)
@@ -502,7 +519,7 @@ def cash_cut(db, session):
     totals = cash_totals(db, session)
     methods = {method: {'count': sum(s.payment_method == method for s in sales),
         'gross': str(money(sum((s.total for s in sales if s.payment_method == method), Decimal('0'))))}
-        for method in ('cash', 'card', 'transfer')}
+        for method in ('cash', 'card', 'transfer', 'mercado_pago')}
     # External refunds concern tickets issued in this shift. Cash refunds concern
     # money actually paid out by this shift, including tickets from earlier shifts.
     returns = db.scalars(select(SaleReturn).where(SaleReturn.sale_id.in_([s.id for s in sales]))).all() if sales else []
@@ -510,7 +527,7 @@ def cash_cut(db, session):
         cutoff = session.closed_at.replace(tzinfo=None)
         returns = [r for r in returns if r.created_at.replace(tzinfo=None) <= cutoff]
     by_sale = {s.id: s for s in sales}
-    for method in ('cash', 'card', 'transfer'):
+    for method in ('cash', 'card', 'transfer', 'mercado_pago'):
         methods[method]['ticket_refunds'] = str(money(sum((r.total for r in returns if by_sale[r.sale_id].payment_method == method), Decimal('0'))))
     expected = session.expected_on_close if session.status == 'closed' and session.expected_on_close is not None else Decimal(totals['expected'])
     return {'session_id': session.id, 'sales_count': len(sales), 'payments': methods,
@@ -700,6 +717,15 @@ def close_cash(session_id: int, data: CloseCash, user: User = Depends(identity))
         result = {'id': session.id, 'expected': str(expected), 'counted': str(session.counted), 'difference': str(money(session.counted - expected))}
         db.commit()
         return result
+
+@app.get('/api/ready')
+def readiness():
+    try:
+        with engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
+    except Exception:
+        raise HTTPException(503, 'Base de datos no disponible')
+    return {'status': 'ok'}
 
 @app.get('/api/health')
 def health():
@@ -972,7 +998,7 @@ def sale_result(sale, replayed=False):
 @app.post('/api/sales', status_code=201)
 def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=100), user: User = Depends(identity)):
     require(user, 'sale')
-    if data.payment_method not in ('cash', 'card', 'transfer'):
+    if data.payment_method not in ('cash', 'card', 'transfer', 'mercado_pago'):
         raise HTTPException(422, 'Forma de pago inválida')
     ids = [i.product_id for i in data.items]
     if len(ids) != len(set(ids)):
@@ -993,6 +1019,18 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
             if existing.actor_id is not None and existing.actor_id != user.id:
                 raise HTTPException(403, 'El reintento pertenece a otro cajero')
             return sale_result(existing, True)
+        intent = None
+        if data.payment_method == 'mercado_pago':
+            intent = db.scalar(select(PaymentIntent).where(PaymentIntent.id == data.payment_intent_id,
+                PaymentIntent.empresa_id == user.empresa_id, PaymentIntent.actor_id == user.id).with_for_update())
+            if intent is None or intent.status != 'approved':
+                raise HTTPException(409, 'El pago integrado no está confirmado')
+            original = json.loads(intent.payload)
+            comparable = data.model_dump(mode='json', exclude={'approval','payment_intent_id'})
+            if comparable != original:
+                raise HTTPException(409, 'El carrito no coincide con el pago integrado')
+        elif data.payment_intent_id:
+            raise HTTPException(422, 'Referencia de pago integrada con método inválido')
         customer = db.scalar(select(Customer).where(Customer.id == data.customer_id, Customer.empresa_id == user.empresa_id)) if data.customer_id else None
         if data.customer_id and customer is None:
             raise HTTPException(404, 'Cliente fuera de esta empresa o inexistente')
@@ -1027,6 +1065,8 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
         total = subtotal + tax
         if total > Decimal('9999999999.99') or subtotal > Decimal('9999999999.99') or discount > Decimal('9999999999.99'):
             raise HTTPException(422, 'El importe excede el límite de una venta')
+        if intent and money(intent.amount) != total:
+            raise HTTPException(409, 'El precio cambió después del pago; requiere conciliación')
         if data.payment_method == 'cash' and money(data.paid) < total:
             raise HTTPException(422, 'Pago insuficiente')
         if data.payment_method != 'cash' and money(data.paid) != total:
@@ -1046,6 +1086,8 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
             db.add(Audit(empresa_id=user.empresa_id, branch_id=data.branch_id, action='sale_created', record_id=sale.id, actor_id=user.id))
             if approved_by:
                 db.add(Audit(empresa_id=user.empresa_id, branch_id=data.branch_id, action='discount_approved', record_id=sale.id, actor_id=approved_by))
+            if intent:
+                intent.status = 'completed'
             result = sale_result(sale)
             db.commit()
             return result
@@ -1257,7 +1299,7 @@ def summary(branch_id: int, user: User = Depends(identity)):
         returns = db.scalars(select(SaleReturn).join(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id)).all()
         methods = {s.id: s.payment_method for s in rows}
         refunded = sum((r.total for r in returns), Decimal('0'))
-        by_method = {method: str(money(sum((s.total for s in rows if s.payment_method == method), Decimal('0')) - sum((r.total for r in returns if methods[r.sale_id] == method), Decimal('0')))) for method in ('cash', 'card', 'transfer')}
+        by_method = {method: str(money(sum((s.total for s in rows if s.payment_method == method), Decimal('0')) - sum((r.total for r in returns if methods[r.sale_id] == method), Decimal('0')))) for method in ('cash', 'card', 'transfer', 'mercado_pago')}
         return {'branch_id': branch_id, 'sales_count': len(rows), 'gross_total': str(money(sum((s.total for s in rows), Decimal('0')))), 'returns_total': str(money(refunded)), 'total': str(money(sum((s.total for s in rows), Decimal('0')) - refunded)), 'by_method': by_method}
 
 class SupplierIn(BaseModel):
@@ -1669,6 +1711,118 @@ def sales_report_excel(branch_id: int, start: date, end: date, cashier_id: int |
     output=BytesIO();wb.save(output)
     return Response(output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition':'attachment; filename="LI_Reporte_Ventas.xlsx"'})
 
+from . import mercado_pago as mp
+
+
+def intent_view(intent):
+    return {'id': intent.id, 'amount': str(intent.amount), 'status': intent.status,
+            'checkout_url': intent.checkout_url, 'payment_id': intent.payment_id,
+            'created_at': intent.created_at.isoformat()}
+
+
+@app.post('/api/payments/checkout', status_code=201)
+def create_payment_checkout(data: SaleIn, idempotency_key: str = Header(min_length=8,max_length=100), user: User = Depends(identity)):
+    require(user,'sale');config=mp.settings()
+    if user.empresa_id != config['company']:
+        raise HTTPException(403,'Cuenta de Mercado Pago no configurada para esta empresa')
+    if data.discount_percent:
+        raise HTTPException(422,'El checkout integrado inicial no admite descuentos; usa la venta manual autorizada')
+    quoted=sale_quote(data,user)
+    normalized=data.model_copy(update={'payment_method':'mercado_pago','paid':Decimal(quoted['total']),'payment_intent_id':None,'approval':None})
+    payload=json.dumps(normalized.model_dump(mode='json',exclude={'approval','payment_intent_id'}),sort_keys=True)
+    with Session(engine) as db:
+        branch_for(db,user,data.branch_id)
+        db.scalar(select(Branch).where(Branch.id==data.branch_id).with_for_update())
+        cash=db.scalar(select(CashSession).where(CashSession.id==data.cash_session_id,CashSession.branch_id==data.branch_id,CashSession.status=='open'))
+        if not cash:raise HTTPException(409,'Abre tu turno antes de generar un cobro')
+        cash_access(db,user,cash,owner=True)
+        for line in data.items:
+            stock=db.scalar(select(Stock).where(Stock.product_id==line.product_id,Stock.branch_id==data.branch_id))
+            if not stock or stock.quantity<line.quantity:raise HTTPException(409,'Existencias insuficientes')
+        intent=db.scalar(select(PaymentIntent).where(PaymentIntent.empresa_id==user.empresa_id,PaymentIntent.request_key==idempotency_key))
+        if intent:
+            if intent.actor_id!=user.id or intent.payload!=payload:raise HTTPException(409,'Clave utilizada para otro cobro')
+            if intent.checkout_url:return intent_view(intent)
+            raise HTTPException(409,'Creación previa pendiente de conciliación; no generes otro cobro')
+        intent=PaymentIntent(id=secrets.token_urlsafe(24),empresa_id=user.empresa_id,branch_id=data.branch_id,actor_id=user.id,
+            payload=payload,amount=Decimal(quoted['total']),request_key=idempotency_key)
+        db.add(intent);db.commit();intent_id=intent.id
+    result=mp.call('POST','/checkout/preferences',{'external_reference':intent_id,
+        'items':[{'id':intent_id,'title':'LI Punto de Venta · compra','quantity':1,'currency_id':'MXN','unit_price':float(Decimal(quoted['total']))}],
+        'notification_url':config['url']+'/api/payments/webhook',
+        'back_urls':{s:config['url']+'/' for s in ('success','pending','failure')},'auto_return':'approved'},key=intent_id)
+    url=result.get('init_point' if config['live'] else 'sandbox_init_point')
+    from urllib.parse import urlparse
+    parsed=urlparse(url or '')
+    if parsed.scheme!='https' or not any((parsed.hostname or '').endswith(suffix) for suffix in ('.mercadopago.com','.mercadopago.com.mx')):
+        raise HTTPException(502,'URL de checkout inválida; consulta la operación pendiente')
+    with Session(engine) as db:
+        intent=db.get(PaymentIntent,intent_id);intent.preference_id=str(result['id']);intent.checkout_url=url
+        if intent.status=='creating':intent.status='pending'
+        db.commit()
+        return intent_view(intent)
+
+
+def apply_provider_payment(payment):
+    config=mp.settings()
+    with Session(engine) as db:
+        intent=db.get(PaymentIntent,str(payment.get('external_reference','')))
+        if intent is None:return {'ignored':True}
+        if (intent.empresa_id!=config['company'] or str(payment.get('collector_id'))!=config['collector']
+            or payment.get('currency_id')!='MXN' or Decimal(str(payment.get('transaction_amount',0)))!=intent.amount
+            or payment.get('live_mode') is not config['live']):
+            raise HTTPException(409,'Pago no coincide con empresa, importe, moneda o entorno')
+        db.scalar(select(Branch).where(Branch.id==intent.branch_id).with_for_update())
+        intent=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent.id).with_for_update().execution_options(populate_existing=True))
+        pid=str(payment['id'])
+        if intent.payment_id and intent.payment_id!=pid:
+            raise HTTPException(409,'Hay otro pago para este checkout; requiere conciliación')
+        if intent.status=='completed':
+            if payment.get('status')!='approved' or Decimal(str(payment.get('transaction_amount_refunded',0)))>0:
+                raise HTTPException(409,'Pago entregado con reembolso o contracargo; revisa conciliación')
+            return intent_view(intent)
+        intent.payment_id=pid;intent.status='refunded' if Decimal(str(payment.get('transaction_amount_refunded',0)))>0 else str(payment.get('status','pending'))[:40]
+        try:db.commit()
+        except IntegrityError:raise HTTPException(409,'Pago ya asociado a otra operación')
+        return intent_view(intent)
+
+
+@app.post('/api/payments/webhook')
+async def payment_webhook(request: Request):
+    data_id=request.query_params.get('data.id','')
+    mp.verify_signature(request.headers.get('x-signature'),request.headers.get('x-request-id'),data_id)
+    if not data_id.isdigit():raise HTTPException(422,'Identificador de pago inválido')
+    body=await request.json()
+    if body.get('type')!='payment':return {'ignored':True}
+    # Neither redirect parameters nor the notification body confirm payment.
+    from starlette.concurrency import run_in_threadpool
+    payment=await run_in_threadpool(mp.call,'GET','/v1/payments/'+data_id)
+    return await run_in_threadpool(apply_provider_payment,payment)
+
+
+@app.get('/api/payments')
+def list_payments(branch_id:int,user:User=Depends(identity)):
+    require_any(user,'sale','report')
+    with Session(engine) as db:
+        branch_for(db,user,branch_id)
+        query=select(PaymentIntent).where(PaymentIntent.empresa_id==user.empresa_id,PaymentIntent.branch_id==branch_id)
+        if user.role not in ('admin_general','admin_sucursal'):query=query.where(PaymentIntent.actor_id==user.id)
+        return [intent_view(i) for i in db.scalars(query.order_by(PaymentIntent.created_at.desc()).limit(100))]
+
+
+@app.post('/api/payments/{intent_id}/confirm')
+def confirm_integrated_sale(intent_id:str,user:User=Depends(identity)):
+    require(user,'sale')
+    with Session(engine) as db:
+        intent=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent_id,PaymentIntent.empresa_id==user.empresa_id,PaymentIntent.actor_id==user.id))
+        if intent is None:raise HTTPException(404,'Cobro no encontrado para este cajero')
+        branch_for(db,user,intent.branch_id)
+        payment_id=intent.payment_id;payload=json.loads(intent.payload)
+        if not payment_id:raise HTTPException(409,'Esperando notificación de Mercado Pago')
+    updated=apply_provider_payment(mp.call('GET','/v1/payments/'+payment_id))
+    if updated['status'] not in ('approved','completed'):raise HTTPException(409,'El proveedor no confirma pago aprobado')
+    return sell(SaleIn(**payload,payment_intent_id=intent_id),'mp-sale-'+intent_id,user)
+
 if os.getenv('APP_ENV', 'demo') != 'production':
     if 'audit_logs' in inspect(engine).get_table_names() and 'actor_id' not in {c['name'] for c in inspect(engine).get_columns('audit_logs')}:
         raise RuntimeError('Base demo anterior: ejecuta python scripts/upgrade_demo_sqlite.py pos.db')
@@ -1677,6 +1831,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
     if 'products' in inspect(engine).get_table_names() and ('sale_returns' not in inspect(engine).get_table_names() or 'kind' not in {c['name'] for c in inspect(engine).get_columns('sale_returns')}):
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'stock' in inspect(engine).get_table_names() and 'minimum' not in {c['name'] for c in inspect(engine).get_columns('stock')}:
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'stock' in inspect(engine).get_table_names() and 'payment_intents' not in inspect(engine).get_table_names():
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

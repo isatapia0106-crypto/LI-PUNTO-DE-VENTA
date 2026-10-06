@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pos
+      POSTGRES_USER: pos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD}
+    volumes:
+      - pos_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U pos -d pos]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      options: {max-size: 10m, max-file: '3'}
+  migrate:
+    build: {context: .., dockerfile: infrastructure/Dockerfile.production}
+    env_file: ../.env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://pos:${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD}@db:5432/pos
+    command: [python, -m, alembic, upgrade, head]
+    depends_on:
+      db: {condition: service_healthy}
+  api:
+    build: {context: .., dockerfile: infrastructure/Dockerfile.production}
+    restart: unless-stopped
+    command: [sh, -c, "python scripts/check_production.py && exec uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --no-access-log"]
+    env_file: ../.env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://pos:${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD}@db:5432/pos
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      options: {max-size: 10m, max-file: '3'}
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Configura DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Configura ACME_EMAIL}
+    ports: ['80:80', '443:443']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: {condition: service_healthy}
+volumes:
+  pos_data:
+  caddy_data:
+  caddy_config:

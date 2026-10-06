@@ -160,6 +160,7 @@ async function refresh(){if(!branchId())return;
   if(can('report'))jobs.push(loadReportCashiers());
   if(can('users_write'))jobs.push(loadUsers());
   if(can('cash_open')||can('report'))jobs.push(refreshCash());
+  if(can('sale'))jobs.push(loadIntegratedPayments());
   if(can('sale')||can('report'))jobs.push((async()=>{const sales=await request(`/api/sales?branch_id=${branchId()}`);$('sales').replaceChildren(...sales.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.folio??'#'+s.id} · ${fecha(s.created_at)}${s.status==='cancelled'?' · CANCELADA':''}`),node('b',pesos(s.total)),button('Ticket',()=>showReceipt(s.id)),button('Devoluciones',()=>openReturn(s.id)),...(can('sale_cancel')&&s.status!=='cancelled'?[button('Cancelar venta',()=>openReturn(s.id,true))]:[]));return row;}));})());
   if(can('report'))jobs.push((async()=>{const s=await request(`/api/reports/summary?branch_id=${branchId()}`);$('summary').textContent=`${s.sales_count} ventas · ${pesos(s.total)} neto de devoluciones · Efectivo ${pesos(s.by_method.cash)}`;})());else $('summary').textContent='Disponible para supervisión';
   if(can('purchase_read')||can('purchase_write'))jobs.push(refreshPurchases());
@@ -360,7 +361,7 @@ function updateReturnTotal(){
 
 async function showCashCut(id){
  const session=await request(`/api/cash/${id}/cut`),c=session.cut;
- const names={cash:'Efectivo',card:'Tarjeta (manual)',transfer:'Transferencia (manual)'};
+ const names={cash:'Efectivo',card:'Tarjeta (manual)',transfer:'Transferencia (manual)',mercado_pago:'Mercado Pago (integrado)'};
  showText(['LI PUNTO DE VENTA',session.open?'CORTE PROVISIONAL · TURNO ABIERTO':'CORTE DE CAJA',
   `${session.register_name} · Turno #${id}`,`Cajero: ${session.cashier_name}`,`Apertura: ${fecha(session.opened_at)}`,
   session.closed_at?`Cierre: ${fecha(session.closed_at)} · Usuario #${c.closed_by??'—'}`:'',
@@ -403,3 +404,17 @@ $('reportForm').onsubmit=async e=>{e.preventDefault();invalidateReport();const v
  }catch(err){$('reportWarning').textContent=err.message;}finally{b.disabled=false;}};
 $('exportExcel').onclick=run(async()=>{if(!reportQuery)return;const b=$('exportExcel');b.disabled=true;try{const response=await fetch('/api/reports/sales.xlsx?'+reportQuery,{headers:{Authorization:`Bearer ${token}`}});if(!response.ok){const err=await response.json();throw Error(err.detail??'No se pudo exportar');}const blob=await response.blob(),url=URL.createObjectURL(blob),a=node('a');a.href=url;a.download='LI_Reporte_Ventas.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}finally{b.disabled=!reportData;}});
 $('reportPdf').onclick=()=>{if(!reportData)return;const r=reportData;showText(['LI PUNTO DE VENTA','REPORTE DE VENTAS',`${r.start} a ${r.end} · ${r.timezone}`,`Sucursal #${r.branch_id} · Cajero ${r.cashier_id??'Todos'}`,`Bruto ${pesos(r.gross)} · Reembolsos ${pesos(r.refunds)} · Neto ${pesos(r.total)}`,`Utilidad estimada ${pesos(r.profit)} · ${r.missing_cost_lines} partidas sin costo`,'','PRODUCTOS',...r.products.map(p=>`${p.name}: ${p.units} unidades netas · ${pesos(p.net)}`),'','MOVIMIENTOS',...r.events.map(v=>`${v.type} #${v.id} · ${v.folio} · ${fecha(v.created_at)} · ${pesos(v.amount)}`),'','Los reembolsos corresponden a su fecha de registro. Utilidad antes de gastos operativos.'].join('\n'));};
+
+$('mpCheckout').onclick=run(async()=>{
+ if(!quote||!cart.size||!myCash.open)throw Error('Agrega productos y abre tu turno.');
+ const b=$('mpCheckout');b.disabled=true;
+ try{const result=await post('/api/payments/checkout',salePayload(),true);cart.clear();$('paid').value='';await refresh();notice('Checkout creado. Abre el enlace y confirma el pago en la lista.');}
+ finally{b.disabled=false;}
+});
+async function loadIntegratedPayments(){
+ const rows=await request(`/api/payments?branch_id=${branchId()}`);
+ $('mpPayments').replaceChildren(...rows.map(p=>{const row=node('div',undefined,'sale');row.append(node('span',`Mercado Pago · ${pesos(p.amount)} · ${p.status} · ${fecha(p.created_at)}`));
+ if(p.checkout_url&&['creating','pending','in_process','rejected'].includes(p.status)){const link=node('a','Abrir Checkout');link.href=p.checkout_url;link.target='_blank';link.rel='noopener noreferrer';row.append(link);}
+ if(p.payment_id&&['approved','completed'].includes(p.status))row.append(button(p.status==='completed'?'Ver ticket confirmado':'Confirmar pago y emitir ticket',async()=>{const sale=await post(`/api/payments/${p.id}/confirm`,{});await refresh();await showReceipt(sale.id);}));
+ return row;}));
+}

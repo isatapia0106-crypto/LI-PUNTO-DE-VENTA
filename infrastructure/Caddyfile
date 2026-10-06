@@ -1,0 +1,15 @@
+{
+ email {$ACME_EMAIL}
+}
+{$DOMAIN} {
+ encode zstd gzip
+ header {
+  X-Content-Type-Options nosniff
+  Referrer-Policy same-origin
+  X-Frame-Options DENY
+ }
+ request_body {
+  max_size 1MB
+ }
+ reverse_proxy api:8000
+}

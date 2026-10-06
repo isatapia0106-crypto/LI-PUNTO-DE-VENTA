@@ -88,3 +88,9 @@ Desde la carpeta del proyecto:
 ```
 
 Recuperación, copia a otro disco y límites: [Respaldos y recuperación](docs/operations/RESPALDOS_Y_RECUPERACION.md).
+
+## Mercado Pago y DigitalOcean
+
+Primera integración de Checkout Pro con firma de webhook, confirmación desde proveedor y registro de cobros pendientes. Cobros reales deshabilitados por defecto. Configuración separada de PostgreSQL, migraciones y HTTPS para DigitalOcean.
+
+[Configuración, límites y pasos de despliegue](docs/operations/MERCADO_PAGO_DIGITALOCEAN.md). No se ha desplegado ni validado contra una cuenta real; requiere pruebas externas, conciliación supervisada y configuración del servidor.
