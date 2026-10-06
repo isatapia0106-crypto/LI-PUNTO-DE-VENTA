@@ -74,3 +74,17 @@ Cierra el servidor antes de recuperar el acceso. Desde la raíz del proyecto eje
 ~~~
 
 El asistente muestra los nombres exactos, pide el usuario existente, permite corregir su nombre (Enter lo conserva) y solicita una nueva contraseña oculta con confirmación. Escribe GUARDAR para aplicar. Crea un respaldo SQLite antes del cambio y conserva el ID, empresa, rol y asignaciones. No activa cuentas desactivadas. Esta herramienta requiere acceso al archivo local pos.db; no es un endpoint web ni recuperación de PostgreSQL. Reinicia INICIAR_LI_POS.bat para invalidar las sesiones locales y entra con los nuevos datos.
+
+
+## Respaldos locales
+
+El iniciador Windows crea una copia verificada en `backups/` antes de abrir el servidor. Cada respaldo contiene `.db` y `.json`; conserva ambos archivos juntos. No se borran copias automáticamente.
+
+Desde la carpeta del proyecto:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/local_backups.py create
+.\.venv\Scripts\python.exe scripts/local_backups.py list
+```
+
+Recuperación, copia a otro disco y límites: [Respaldos y recuperación](docs/operations/RESPALDOS_Y_RECUPERACION.md).

@@ -45,6 +45,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'No se creó el administrador.' }
     }
 
+    & $python scripts/local_backups.py create
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo verificar el respaldo de inicio. Revisa pos.db antes de continuar.' }
+
     $server = Start-Process -FilePath $python -ArgumentList @('-m','uvicorn','backend.app.main:app','--host','127.0.0.1','--port','8000') -WorkingDirectory $repo -PassThru
     $ready = $false
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
@@ -64,4 +67,5 @@ try {
     Read-Host 'Presiona Enter para cerrar'
     exit 1
 }
+
 

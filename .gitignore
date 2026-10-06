@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 *.db
 .env
+
+backups/
+*.db.backup-*
+*.db-wal
+*.db-shm
+*.partial
