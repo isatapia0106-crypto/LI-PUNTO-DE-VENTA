@@ -47,6 +47,8 @@ def migrate(path):
             baseline = 'a3d7e910c624' if {'sale_returns', 'sale_return_items'} <= names else 'f2b3409ac871' if modern else 'e1a59c0d35f4'
             if baseline == 'a3d7e910c624' and 'kind' in {x[1] for x in db.execute('PRAGMA table_info(sale_returns)')} and 'close_snapshot' in {x[1] for x in db.execute('PRAGMA table_info(cash_sessions)')}:
                 baseline = 'b4e812c9a530'
+            if baseline == 'b4e812c9a530' and 'minimum' in {x[1] for x in db.execute('PRAGMA table_info(stock)')} and 'token_version' in {x[1] for x in db.execute('PRAGMA table_info(users)')}:
+                baseline = 'c5f902ad6718'
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise SystemExit('La base tiene errores de integridad. No se modificó.')
         backup = path.with_name(path.name + '.backup-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))

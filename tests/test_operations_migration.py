@@ -59,7 +59,7 @@ def test_returns_upgrade_unstamped_modern_demo(tmp_path):
     with sqlite3.connect(path) as db:db.execute('DROP TABLE alembic_version')
     run('scripts/migrate_local.py',str(path))
     with sqlite3.connect(path) as db:
-        assert db.execute('SELECT version_num FROM alembic_version').fetchone()[0]=='b4e812c9a530'
+        assert db.execute('SELECT version_num FROM alembic_version').fetchone()[0]=='c5f902ad6718'
         assert db.execute('SELECT COUNT(*) FROM sale_returns').fetchone()[0]==0
         assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
 
@@ -77,3 +77,21 @@ def test_upgrade_returns_preserves_record_and_adds_cut_snapshot(tmp_path):
         assert 'close_snapshot' in {x[1] for x in db.execute('PRAGMA table_info(cash_sessions)')}
         assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
     assert len(list(tmp_path.glob('returns.db.backup-*')))==1
+
+def test_high_priority_migration_preserves_user_stock(tmp_path):
+    path=tmp_path/'high.db'
+    env={**os.environ,'APP_ENV':'production','JWT_SECRET':'migration-test-secret','DATABASE_URL':f'sqlite:///{path}'}
+    def run(*args):
+        r=subprocess.run([sys.executable,*args],cwd=ROOT,env=env,capture_output=True,text=True)
+        assert r.returncode==0,r.stdout+r.stderr
+    run('-m','alembic','upgrade','b4e812c9a530')
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO branches (id,empresa_id,name) VALUES (1,1,'Sucursal')")
+        db.execute("INSERT INTO users (id,empresa_id,username,password_hash,role,active) VALUES (1,1,'anterior','hash-conservado','admin_general',1)")
+        db.execute("INSERT INTO products (id,empresa_id,sku,name,price) VALUES (1,1,'OLD','Producto',100)")
+        db.execute('INSERT INTO stock (id,product_id,branch_id,quantity,average_cost) VALUES (1,1,1,8,15)')
+    run('scripts/migrate_local.py',str(path))
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT quantity,average_cost,minimum FROM stock').fetchone()==(8,15,0)
+        assert db.execute('SELECT password_hash,token_version FROM users').fetchone()==('hash-conservado',0)
+        assert db.execute('PRAGMA foreign_key_check').fetchall()==[]

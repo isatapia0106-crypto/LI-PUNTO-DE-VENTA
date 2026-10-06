@@ -1,7 +1,9 @@
 import os
 import json
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+from io import BytesIO
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
@@ -10,7 +12,7 @@ from jwt.exceptions import InvalidTokenError
 from pwdlib import PasswordHash
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from sqlalchemy import create_engine, ForeignKey, String, Integer, Numeric, DateTime, select, UniqueConstraint, inspect, or_, and_, Index, text, event
@@ -49,6 +51,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(300))
     role: Mapped[str] = mapped_column(String(40))
     active: Mapped[bool] = mapped_column(default=True)
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
 
 class UserBranch(Base):
     __tablename__ = 'user_branches'
@@ -150,6 +153,7 @@ class Stock(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey('products.id'))
     branch_id: Mapped[int] = mapped_column(Integer)
     quantity: Mapped[int] = mapped_column(Integer, default=0)
+    minimum: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
     average_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal('0'))
     __table_args__ = (UniqueConstraint('product_id', 'branch_id'),)
 
@@ -415,12 +419,12 @@ def identity(credentials: HTTPAuthorizationCredentials | None = Depends(bearer))
         raise HTTPException(401, 'Sesión inválida', headers={'WWW-Authenticate': 'Bearer'})
     with Session(engine) as db:
         user = db.get(User, user_id)
-        if not user or not user.active:
+        if not user or not user.active or payload.get('ver', 0) != user.token_version:
             raise HTTPException(401, 'Sesión inválida')
         return user
 
 def token_for(user: User) -> str:
-    return jwt.encode({'sub': str(user.id), 'exp': datetime.now(timezone.utc) + timedelta(hours=8)}, JWT_SECRET, algorithm='HS256')
+    return jwt.encode({'sub': str(user.id), 'ver': user.token_version, 'exp': datetime.now(timezone.utc) + timedelta(hours=8)}, JWT_SECRET, algorithm='HS256')
 
 @app.post('/api/auth/login')
 def login(data: LoginIn):
@@ -437,6 +441,8 @@ def me(user: User = Depends(identity)):
 @app.post('/api/users', status_code=201)
 def create_user(data: UserIn, user: User = Depends(identity)):
     require(user, 'users_write')
+    if any(c.isspace() for c in data.username):
+        raise HTTPException(422, 'El usuario no debe contener espacios')
     if data.role not in ROLE_ACTIONS:
         raise HTTPException(422, 'Rol inválido')
     ids = set(data.branch_ids)
@@ -449,6 +455,7 @@ def create_user(data: UserIn, user: User = Depends(identity)):
         try:
             db.flush()
             db.add_all(UserBranch(user_id=created.id, branch_id=branch_id) for branch_id in ids)
+            db.add(Audit(empresa_id=user.empresa_id, branch_id=min(ids), action='user_created', record_id=created.id, actor_id=user.id))
             db.commit()
         except Exception:
             db.rollback()
@@ -890,6 +897,7 @@ def product_view(p, stock):
     return {'id': p.id, 'sku': p.sku, 'barcode': p.barcode, 'name': p.name, 'price': str(p.price),
             'unit': p.unit, 'tax_rate': str(p.tax_rate), 'tax_exempt': p.tax_exempt,
             'price_includes_tax': p.price_includes_tax, 'active': p.active, 'stock': stock.quantity if stock else 0,
+            'minimum': stock.minimum if stock else 0, 'low_stock': bool(p.active and stock and stock.minimum > 0 and stock.quantity <= stock.minimum),
             'average_cost': str(stock.average_cost) if stock else '0.0000'}
 
 
@@ -1475,12 +1483,200 @@ def reconcile_count(data: CountIn, idempotency_key: str = Header(min_length=8, m
         except IntegrityError:
             raise HTTPException(409, 'Conteo duplicado; consulta el inventario')
 
+class StockMinimumIn(BaseModel):
+    branch_id: int = Field(gt=0)
+    minimum: int = Field(ge=0, le=1000000)
+
+@app.put('/api/stock/{product_id}/minimum')
+def set_minimum(product_id: int, data: StockMinimumIn, user: User = Depends(identity)):
+    require(user, 'stock_write')
+    with Session(engine) as db:
+        branch_for(db, user, data.branch_id)
+        stock = db.scalar(select(Stock).join(Product).where(Stock.product_id == product_id,
+            Stock.branch_id == data.branch_id, Product.empresa_id == user.empresa_id).with_for_update())
+        if stock is None:
+            raise HTTPException(404, 'Producto no registrado en esta sucursal')
+        stock.minimum = data.minimum
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=data.branch_id, actor_id=user.id, action='stock_minimum', record_id=stock.id))
+        db.commit()
+        return {'product_id': product_id, 'minimum': data.minimum}
+
+@app.get('/api/stock/alerts')
+def stock_alerts(branch_id: int, user: User = Depends(identity)):
+    require_any(user, 'stock_write', 'report')
+    with Session(engine) as db:
+        branch_for(db, user, branch_id)
+        rows = db.execute(select(Product, Stock).join(Stock).where(Product.empresa_id == user.empresa_id,
+            Product.active == True, Stock.branch_id == branch_id, Stock.minimum > 0, Stock.quantity <= Stock.minimum).order_by(Stock.quantity, Product.name)).all()
+        return [product_view(p, st) for p, st in rows]
+
+class UserUpdateIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    username: str = Field(min_length=3, max_length=80)
+    role: str
+    active: bool = True
+    branch_ids: list[int] = Field(min_length=1)
+    password: str | None = Field(default=None, min_length=12, max_length=200)
+
+@app.get('/api/users')
+def list_users(user: User = Depends(identity)):
+    require(user, 'users_write')
+    with Session(engine) as db:
+        return [{'id': u.id, 'username': u.username, 'role': u.role, 'active': u.active,
+                 'branch_ids': list(db.scalars(select(UserBranch.branch_id).where(UserBranch.user_id == u.id)))}
+                for u in db.scalars(select(User).where(User.empresa_id == user.empresa_id).order_by(User.username))]
+
+@app.put('/api/users/{user_id}')
+def update_user(user_id: int, data: UserUpdateIn, user: User = Depends(identity)):
+    require(user, 'users_write')
+    if data.role not in ROLE_ACTIONS:
+        raise HTTPException(422, 'Rol inválido')
+    with Session(engine) as db:
+        # Serialize administrative edits across this company, including last-admin checks.
+        db.scalars(select(Branch).where(Branch.empresa_id == user.empresa_id).order_by(Branch.id).with_for_update()).all()
+        target = db.scalar(select(User).where(User.id == user_id, User.empresa_id == user.empresa_id).with_for_update())
+        if target is None:
+            raise HTTPException(404, 'Usuario no encontrado')
+        if data.username != target.username and any(c.isspace() for c in data.username):
+            raise HTTPException(422, 'El usuario no debe contener espacios')
+        ids = set(data.branch_ids)
+        valid = db.scalars(select(Branch.id).where(Branch.empresa_id == user.empresa_id, Branch.id.in_(ids))).all()
+        if len(valid) != len(data.branch_ids):
+            raise HTTPException(422, 'Sucursales inválidas o duplicadas')
+        if target.id == user.id and (not data.active or data.role != 'admin_general'):
+            raise HTTPException(409, 'No puedes desactivar ni quitar tu propio rol de administración')
+        if target.role == 'admin_general' and target.active and (not data.active or data.role != 'admin_general'):
+            others = db.scalars(select(User.id).where(User.empresa_id == user.empresa_id, User.role == 'admin_general', User.active == True, User.id != target.id)).all()
+            if not others:
+                raise HTTPException(409, 'Debe permanecer un administrador general activo')
+        if not data.active or data.role != target.role or ids != set(db.scalars(select(UserBranch.branch_id).where(UserBranch.user_id == target.id))):
+            if db.scalar(select(CashSession.id).where(CashSession.cashier_id == target.id, CashSession.status == 'open')):
+                raise HTTPException(409, 'Cierra los turnos abiertos antes de cambiar rol, sucursales o desactivar')
+        assignments = list(db.scalars(select(UserBranch).where(UserBranch.user_id == target.id)))
+        target.username, target.role, target.active = data.username, data.role, data.active
+        if data.password:
+            target.password_hash = password_hash.hash(data.password)
+        target.token_version += 1
+        for assignment in assignments:
+            db.delete(assignment)
+        try:
+            db.flush()
+        except IntegrityError:
+            raise HTTPException(409, 'Usuario duplicado')
+        db.add_all(UserBranch(user_id=target.id, branch_id=bid) for bid in ids)
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=min(ids), actor_id=user.id, action='user_updated', record_id=target.id))
+        try:
+            db.commit()
+        except IntegrityError:
+            raise HTTPException(409, 'Usuario duplicado')
+        return {'id': target.id, 'username': target.username, 'session_revoked': True}
+
+
+def build_report(db, user, branch_id, start, end, cashier_id):
+    branch_for(db, user, branch_id)
+    if end < start or (end - start).days > 365:
+        raise HTTPException(422, 'Selecciona un periodo de hasta 366 días en orden válido')
+    tz = ZoneInfo('America/Mexico_City')
+    lower = datetime.combine(start, datetime.min.time(), tz).astimezone(timezone.utc).replace(tzinfo=None)
+    upper = datetime.combine(end + timedelta(days=1), datetime.min.time(), tz).astimezone(timezone.utc).replace(tzinfo=None)
+    if cashier_id:
+        if not db.scalar(select(User.id).where(User.id == cashier_id, User.empresa_id == user.empresa_id)):
+            raise HTTPException(404, 'Cajero no encontrado')
+    sale_query = select(Sale).where(Sale.empresa_id == user.empresa_id, Sale.branch_id == branch_id, Sale.created_at >= lower, Sale.created_at < upper)
+    return_query = select(SaleReturn).join(Sale).where(Sale.empresa_id == user.empresa_id, Sale.branch_id == branch_id, SaleReturn.created_at >= lower, SaleReturn.created_at < upper)
+    if cashier_id:
+        sale_query = sale_query.where(Sale.actor_id == cashier_id)
+        return_query = return_query.where(Sale.actor_id == cashier_id)
+    sales = db.scalars(sale_query.order_by(Sale.created_at).limit(50001)).all()
+    returns = db.scalars(return_query.order_by(SaleReturn.created_at).limit(50001)).all()
+    if len(sales) > 50000 or len(returns) > 50000:
+        raise HTTPException(422, 'Demasiados registros; reduce el periodo')
+    net, cost, refunded = Decimal('0'), Decimal('0'), Decimal('0')
+    products, events = {}, []
+    def entry(item):
+        return products.setdefault(item.product_id, {'product_id': item.product_id, 'name': item.name, 'units': 0, 'net': Decimal('0')})
+    for sale in sales:
+        net += sale.subtotal
+        for item in sale.items:
+            c = item.cost * item.quantity
+            cost += c
+            p = entry(item); p['units'] += item.quantity
+            p['net'] += item.net_amount if item.net_amount is not None else item.unit_price * item.quantity
+        events.append({'type': 'Venta', 'id': sale.id, 'folio': sale.folio, 'created_at': sale.created_at.isoformat(), 'cashier_id': sale.actor_id,
+                       'method': sale.payment_method, 'amount': str(sale.total)})
+    for r in returns:
+        sale = db.get(Sale, r.sale_id);refunded += r.total
+        for line in r.items:
+            item = db.get(SaleItem, line.sale_item_id)
+            original = refundable_line_total(sale, item)
+            # Allocate the original line net in proportion to the recorded refund.
+            original_net = item.net_amount if item.net_amount is not None else item.unit_price * item.quantity
+            returned_net = original_net * line.total / original if original else Decimal('0')
+            net -= returned_net
+            if line.restock:
+                cost -= item.cost * line.quantity
+            p = entry(item);p['units'] -= line.quantity;p['net'] -= returned_net
+        events.append({'type': 'Cancelación' if r.kind == 'cancellation' else 'Devolución', 'id': r.id, 'folio': sale.folio, 'created_at': r.created_at.isoformat(),
+                       'cashier_id': sale.actor_id, 'method': sale.payment_method, 'amount': str(-r.total)})
+    gross = sum((x.total for x in sales), Decimal('0'))
+    return {'branch_id': branch_id, 'start': start.isoformat(), 'end': end.isoformat(), 'cashier_id': cashier_id,
+            'timezone': 'America/Mexico_City', 'sales_count': len(sales), 'return_count': len(returns),
+            'gross': str(money(gross)), 'refunds': str(money(refunded)), 'total': str(money(gross - refunded)),
+            'net_before_tax': str(money(net)), 'cost': str(money(cost)), 'profit': str(money(net - cost)),
+            'missing_cost_lines': sum(x.cost == 0 for sale in sales for x in sale.items),
+            'products': [{**p, 'net': str(money(p['net']))} for p in sorted(products.values(), key=lambda p: (-p['units'], p['name']))],
+            'events': sorted(events, key=lambda e: e['created_at'])}
+
+@app.get('/api/reports/cashiers')
+def report_cashiers(branch_id: int, user: User = Depends(identity)):
+    require(user, 'report')
+    with Session(engine) as db:
+        branch_for(db, user, branch_id)
+        ids = db.scalars(select(Sale.actor_id).where(Sale.empresa_id == user.empresa_id, Sale.branch_id == branch_id, Sale.actor_id.is_not(None)).distinct()).all()
+        return [{'id': u.id, 'name': u.username} for u in db.scalars(select(User).where(User.empresa_id == user.empresa_id, User.id.in_(ids)).order_by(User.username))]
+
+@app.get('/api/reports/sales')
+def sales_report(branch_id: int, start: date, end: date, cashier_id: int | None = None, user: User = Depends(identity)):
+    require(user, 'report')
+    with Session(engine) as db:
+        return build_report(db, user, branch_id, start, end, cashier_id)
+
+@app.get('/api/reports/sales.xlsx')
+def sales_report_excel(branch_id: int, start: date, end: date, cashier_id: int | None = None, user: User = Depends(identity)):
+    require(user, 'report')
+    with Session(engine) as db:
+        report = build_report(db, user, branch_id, start, end, cashier_id)
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active; ws.title = 'Resumen'
+    ws.append(['LI Punto de Venta', 'Reporte por fecha de operación'])
+    for label, value in [('Sucursal', branch_id), ('Desde', report['start']), ('Hasta', report['end']), ('Zona horaria', report['timezone']),
+                         ('Ventas brutas', report['gross']), ('Reembolsos', report['refunds']), ('Total neto', report['total']), ('Utilidad estimada', report['profit']), ('Partidas sin costo', report['missing_cost_lines'])]:
+        ws.append([label, float(Decimal(value)) if label in ('Ventas brutas', 'Reembolsos', 'Total neto', 'Utilidad estimada') else value])
+    for title, headers, rows in [('Movimientos', ['Tipo','ID','Folio','Fecha UTC','Cajero','Pago','Importe'], [[float(Decimal(e[k])) if k == 'amount' else e[k] for k in ('type','id','folio','created_at','cashier_id','method','amount')] for e in report['events']]),
+                                 ('Productos', ['ID','Producto','Unidades netas','Venta neta sin impuesto'], [[float(Decimal(p[k])) if k == 'net' else p[k] for k in ('product_id','name','units','net')] for p in report['products']])]:
+        sheet = wb.create_sheet(title);sheet.append(headers)
+        for row in rows:
+            sheet.append(row)
+            # Prevent formula injection from names and other stored strings.
+            for cell in sheet[sheet.max_row]:
+                if isinstance(cell.value, str):cell.data_type = 's'
+        sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
+    from openpyxl.styles import Font, PatternFill
+    for sheet in wb:
+        for cell in sheet[1]:cell.font=Font(bold=True,color='FFFFFF');cell.fill=PatternFill('solid',fgColor='252B36')
+        for column in sheet.columns:
+            sheet.column_dimensions[column[0].column_letter].width=min(55,max(16,max(len(str(c.value or '')) for c in column)+2))
+    output=BytesIO();wb.save(output)
+    return Response(output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition':'attachment; filename="LI_Reporte_Ventas.xlsx"'})
+
 if os.getenv('APP_ENV', 'demo') != 'production':
     if 'audit_logs' in inspect(engine).get_table_names() and 'actor_id' not in {c['name'] for c in inspect(engine).get_columns('audit_logs')}:
         raise RuntimeError('Base demo anterior: ejecuta python scripts/upgrade_demo_sqlite.py pos.db')
     if 'products' in inspect(engine).get_table_names() and 'barcode' not in {c['name'] for c in inspect(engine).get_columns('products')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'products' in inspect(engine).get_table_names() and ('sale_returns' not in inspect(engine).get_table_names() or 'kind' not in {c['name'] for c in inspect(engine).get_columns('sale_returns')}):
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'stock' in inspect(engine).get_table_names() and 'minimum' not in {c['name'] for c in inspect(engine).get_columns('stock')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

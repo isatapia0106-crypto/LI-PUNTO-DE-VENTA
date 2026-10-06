@@ -314,3 +314,5 @@
 #returnLines{max-height:35vh;overflow:auto}
 #returnError{color:#ffb4ab}
 @media screen and (max-width:560px){.return-line{grid-template-columns:1fr}}
+
+.report-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.stock-alert{border-left:3px solid #e8b64e}#userBranches{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#usersList .sale{justify-content:space-between}#userError,#minimumError{color:#ffb4ab}@media screen and (max-width:650px){.report-filters,#userBranches{grid-template-columns:1fr}}
