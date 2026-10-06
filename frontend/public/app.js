@@ -415,6 +415,9 @@ async function loadIntegratedPayments(){
  const rows=await request(`/api/payments?branch_id=${branchId()}`);
  $('mpPayments').replaceChildren(...rows.map(p=>{const row=node('div',undefined,'sale');row.append(node('span',`Mercado Pago · ${pesos(p.amount)} · ${p.status} · ${fecha(p.created_at)}`));
  if(p.checkout_url&&['creating','pending','in_process','rejected'].includes(p.status)){const link=node('a','Abrir Checkout');link.href=p.checkout_url;link.target='_blank';link.rel='noopener noreferrer';row.append(link);}
- if(p.payment_id&&['approved','completed'].includes(p.status))row.append(button(p.status==='completed'?'Ver ticket confirmado':'Confirmar pago y emitir ticket',async()=>{const sale=await post(`/api/payments/${p.id}/confirm`,{});await refresh();await showReceipt(sale.id);}));
+ if(p.actor_id===me.id&&!p.review_reason&&p.payment_id&&['approved','completed'].includes(p.status))row.append(button(p.status==='completed'?'Ver ticket confirmado':'Confirmar pago y emitir ticket',async()=>{const sale=await post(`/api/payments/${p.id}/confirm`,{});await refresh();await showReceipt(sale.id);}));
+ row.append(button('Consultar proveedor',async()=>{await post(`/api/payments/${p.id}/reconcile`,{});await refresh();notice('Consulta del proveedor terminada.');}));
+ if(p.reserved)row.append(node('small','Inventario reservado'));
+ if(p.review_reason)row.append(node('strong',`Requiere revisión: ${p.review_reason}`));
  return row;}));
 }

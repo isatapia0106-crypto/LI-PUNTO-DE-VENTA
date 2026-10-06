@@ -1,0 +1,49 @@
+name: PostgreSQL and production validation
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pos
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: pos
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pos -d pos"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://pos:ci-only-password@localhost:5432/pos
+      TEST_DATABASE_URL: postgresql+psycopg://pos:ci-only-password@localhost:5432/pos
+      JWT_SECRET: ci-only-key-12345678901234567890123456789012345678901234567890
+      PGHOST: localhost
+      PGUSER: pos
+      PGPASSWORD: ci-only-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r backend/requirements.txt pytest
+      - name: Migrate PostgreSQL from empty database
+        run: APP_ENV=production python -m alembic upgrade head
+      - name: Financial and inventory regressions against PostgreSQL
+        run: python -m pytest tests/test_sales.py tests/test_operations.py tests/test_returns.py tests/test_cancel_cut.py tests/test_high_priority.py tests/test_integrated_payments.py -q
+      - name: Install matching PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
+      - name: Restore backup into isolated database and compare contents
+        run: |
+          pg_dump -d pos -Fc -f /tmp/pos.dump
+          createdb pos_restore_check
+          pg_restore --exit-on-error --single-transaction -d pos_restore_check /tmp/pos.dump
+          python scripts/verify_postgres_restore.py --restored-url postgresql+psycopg://pos:ci-only-password@localhost:5432/pos_restore_check
+      - name: Validate production image build
+        run: docker build -f infrastructure/Dockerfile.production -t li-pos-validation .

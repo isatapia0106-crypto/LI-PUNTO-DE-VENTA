@@ -58,8 +58,12 @@ def test_pending_rejected_and_price_change_preserves_record(provider):
     pay['status']='approved';notify(pay)
     from backend.app.main import Product
     with Session(engine) as db:db.get(Product,pid).price=Decimal('150');db.commit()
-    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==409
-    with Session(engine) as db:assert db.get(PaymentIntent,intent['id']).status=='approved'
+    r=client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={})
+    assert r.status_code==200,r.text
+    assert r.json()['total']==intent['amount']
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id'])
+        assert saved.status=='completed' and not saved.reservation_active
 
 
 def test_disabled_and_production_config(monkeypatch):
@@ -69,3 +73,35 @@ def test_disabled_and_production_config(monkeypatch):
     assert validate(env)
     with pytest.raises(ValueError):validate({**env,'JWT_SECRET':'weak'})
     with pytest.raises(ValueError):validate({**env,'MP_MODE':'live','MP_LIVE_ENABLED':'false'})
+
+def test_reservation_blocks_manual_stock_changes_and_releases_on_sale(provider):
+    from backend.app.main import Stock, reserved_quantity
+    headers,turn,pid,intent,data=setup_intent()
+    with Session(engine) as db:
+        stock=db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6))
+        stock.quantity=data['items'][0]['quantity'];db.commit()
+        assert reserved_quantity(db,6,pid)==stock.quantity
+    assert client.post('/api/sales',headers={**headers,'Idempotency-Key':'manual-'+str(pid)},json=data).status_code==409
+    assert client.post(f'/api/products/{pid}/stock',headers=ADMIN,json={'branch_id':6,'change':-1,'reason':'ajuste'}).status_code==409
+    assert client.post('/api/stock/transfers',headers={**ADMIN,'Idempotency-Key':'transfer-'+str(pid)},json={'source_branch_id':6,'target_branch_id':2,'product_id':pid,'quantity':1}).status_code==409
+    assert client.post('/api/stock/counts',headers={**ADMIN,'Idempotency-Key':'reserved-count-'+str(pid)},json={'branch_id':6,'product_id':pid,'expected':1,'counted':0,'reason':'conteo físico'}).status_code==409
+    pay=payment(intent);provider[str(pay['id'])]=pay;assert notify(pay).status_code==200
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==200
+    with Session(engine) as db:assert reserved_quantity(db,6,pid)==0
+
+
+def test_reconcile_missing_webhook_and_persist_chargeback(provider,monkeypatch):
+    headers,_,_,intent,_=setup_intent();pay=payment(intent)
+    def call(method,path,payload=None,key=None):
+        if path.startswith('/v1/payments/search?'):return {'results':[{'id':pay['id'],'external_reference':intent['id']}],'paging':{'total':1}}
+        return pay
+    monkeypatch.setattr(mp,'call',call)
+    r=client.post(f"/api/payments/{intent['id']}/reconcile",headers=headers,json={})
+    assert r.status_code==200,r.text
+    assert r.json()['status']=='approved'
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==200
+    pay['status']='charged_back'
+    r=client.post(f"/api/payments/{intent['id']}/reconcile",headers=headers,json={})
+    assert r.status_code==200 and 'charged_back' in r.json()['review_reason']
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==409
+    assert client.post(f"/api/payments/{intent['id']}/reconcile",headers=OUTSIDER,json={}).status_code==404

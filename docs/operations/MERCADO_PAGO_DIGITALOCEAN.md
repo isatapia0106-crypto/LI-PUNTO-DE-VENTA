@@ -59,3 +59,49 @@ Genera dump custom de PostgreSQL, comprueba que pg_restore puede leer el catálo
 python -m pytest tests/test_integrated_payments.py tests/test_backups.py tests/test_high_priority.py tests/test_cancel_cut.py tests/test_returns.py tests/test_operations.py tests/test_sales.py tests/test_operations_migration.py -q
 
 Referencias oficiales: https://www.mercadopago.com.mx/developers/en/reference/online-payments/checkout-pro-preferences/overview ; https://www.mercadopago.com.mx/developers/en/docs/checkout-pro-preferences/additional-content/notifications/webhooks ; https://caddyserver.com/docs/automatic-https ; https://docs.docker.com/compose/how-tos/startup-order/ ; https://www.postgresql.org/docs/16/app-pgdump.html
+
+## Prioridades altas: reservas y conciliación
+
+Los checkouts nuevos reservan unidades bajo el mismo bloqueo de sucursal que las
+ventas, ajustes, traspasos y conteos. Las unidades se descuentan físicamente y la
+reserva se consume en una sola transacción al emitir el ticket. El precio, nombre,
+unidad y tratamiento fiscal quedan congelados al crear el checkout. El costo se
+registra al entregar. Los cobros anteriores a esta migración siguen sin reserva.
+
+El botón **Consultar proveedor** consulta pagos por la referencia del checkout y
+verifica cada recurso con la API; recupera aprobaciones aunque falte el webhook.
+No crea otro cobro ni emite un ticket por sí solo. Los reembolsos y contracargos de
+ventas entregadas quedan como incidencias persistentes visibles, sin cambiar caja,
+inventario o ventas automáticamente. Múltiples pagos se marcan para revisión.
+
+**Límites pendientes:** una reserva no caduca ni se libera por un pago rechazado:
+el mismo enlace puede volver a cobrarse. La liberación requiere deshabilitar el
+checkout y resolver cualquier pago tardío; aún no hay automatización para ello.
+Un timeout al crear la preferencia sigue requiriendo revisión supervisada en
+Mercado Pago. No se deben generar cobros de reemplazo. Los reembolsos, contracargos
+ y pagos múltiples requieren resolución administrativa; el sistema no ejecuta
+reembolsos remotos ni asientos automáticos. Cerrar el turno antes de emitir el
+ticket de un pago aprobado sigue bloqueando su entrega y requiere intervención.
+
+## Validación de PostgreSQL y recuperación
+
+El workflow `production-validation.yml` prepara PostgreSQL 16, aplica Alembic,
+ejecuta las pruebas financieras e inventario contra PostgreSQL, crea un respaldo,
+lo restaura en **otra base aislada**, compara todas las filas y construye la imagen.
+Su resultado en GitHub debe revisarse antes de desplegar; haber añadido el workflow
+no implica que haya pasado. No utiliza credenciales reales de Mercado Pago.
+
+Para comprobar una restauración real, detén escrituras y restaura el dump en una
+base separada. Configura `DATABASE_URL` con la fuente y ejecuta:
+
+```bash
+python scripts/verify_postgres_restore.py --restored-url 'postgresql+psycopg://usuario:clave@servidor/base_aislada'
+```
+
+No publiques la contraseña en el historial: usa variables de entorno locales para
+construir el argumento. La comparación lee todas las filas; para bases grandes
+requiere suficiente memoria. Conserva fuente y respaldo hasta terminar la revisión.
+La migración de los datos locales de `pos.db` a PostgreSQL todavía requiere una
+copia autorizada de la base y validación de sus datos: no está automatizada aquí.
+El despliegue requiere IP, dominio y configuración privada en el servidor. Las
+pruebas de pagos reales requieren cuentas de prueba del proveedor y HTTPS accesible.

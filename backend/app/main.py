@@ -166,12 +166,23 @@ class PaymentIntent(Base):
     payload: Mapped[str] = mapped_column(String(20000))
     amount: Mapped[Decimal] = mapped_column(Numeric(12,2))
     status: Mapped[str] = mapped_column(String(40), default='creating')
+    reservation_active: Mapped[bool] = mapped_column(default=False, server_default='0')
+    price_snapshot: Mapped[str | None] = mapped_column(String(20000), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     preference_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     checkout_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     payment_id: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
     request_key: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     __table_args__ = (UniqueConstraint('empresa_id', 'request_key'),)
+
+def reserved_quantity(db, branch_id, product_id, exclude=None):
+    """Called under the branch lock for every inventory reduction."""
+    intents = db.scalars(select(PaymentIntent).where(PaymentIntent.branch_id == branch_id,
+        PaymentIntent.reservation_active == True))
+    return sum(line['quantity'] for intent in intents if intent.id != exclude
+        for line in json.loads(intent.payload)['items'] if line['product_id'] == product_id)
+
 
 class Sale(Base):
     __tablename__ = 'sales'
@@ -838,7 +849,7 @@ def adjust_stock(product_id: int, data: AdjustStock, user: User = Depends(identi
         if not row:
             raise HTTPException(404, 'Producto sin inventario en sucursal')
         product, stock = row
-        if stock.quantity + data.change < 0:
+        if stock.quantity + data.change < reserved_quantity(db, data.branch_id, product_id):
             raise HTTPException(409, 'Inventario insuficiente')
         stock.quantity += data.change
         db.add(StockMovement(actor_id=user.id, empresa_id=empresa, branch_id=data.branch_id, product_id=product.id, change=data.change, reason=data.reason))
@@ -885,7 +896,7 @@ def transfer_stock(data: TransferStock, idempotency_key: str = Header(min_length
                 .order_by(Stock.branch_id).with_for_update()).all()
             by_branch = {stock.branch_id: stock for stock in stocks}
             source = by_branch.get(data.source_branch_id)
-            if source is None or source.quantity < data.quantity:
+            if source is None or source.quantity - reserved_quantity(db, data.source_branch_id, data.product_id) < data.quantity:
                 raise HTTPException(409, 'Existencias insuficientes en sucursal origen')
             target = by_branch.get(data.target_branch_id)
             if target is None:
@@ -1023,7 +1034,7 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
         if data.payment_method == 'mercado_pago':
             intent = db.scalar(select(PaymentIntent).where(PaymentIntent.id == data.payment_intent_id,
                 PaymentIntent.empresa_id == user.empresa_id, PaymentIntent.actor_id == user.id).with_for_update())
-            if intent is None or intent.status != 'approved':
+            if intent is None or intent.status != 'approved' or intent.review_reason:
                 raise HTTPException(409, 'El pago integrado no está confirmado')
             original = json.loads(intent.payload)
             comparable = data.model_dump(mode='json', exclude={'approval','payment_intent_id'})
@@ -1050,9 +1061,15 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
         sale_lines = []
         for item in data.items:
             product, stock = mapped[item.product_id]
-            if not product.active:
+            if intent and intent.price_snapshot:
+                from types import SimpleNamespace
+                values = json.loads(intent.price_snapshot)[str(product.id)]
+                product = SimpleNamespace(**values)
+                product.price = Decimal(product.price)
+                product.tax_rate = Decimal(product.tax_rate)
+            elif not product.active:
                 raise HTTPException(409, f'Producto inactivo: {product.name}')
-            if stock.quantity < item.quantity:
+            if stock.quantity - reserved_quantity(db, data.branch_id, item.product_id, intent.id if intent else None) < item.quantity:
                 raise HTTPException(409, f'Sin existencias suficientes: {product.name}')
             net, line_tax, line_discount = price_line(product, item.quantity, data.discount_percent)
             subtotal += net
@@ -1088,6 +1105,7 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
                 db.add(Audit(empresa_id=user.empresa_id, branch_id=data.branch_id, action='discount_approved', record_id=sale.id, actor_id=approved_by))
             if intent:
                 intent.status = 'completed'
+                intent.reservation_active = False
             result = sale_result(sale)
             db.commit()
             return result
@@ -1512,6 +1530,8 @@ def reconcile_count(data: CountIn, idempotency_key: str = Header(min_length=8, m
             raise HTTPException(409, 'El inventario cambió durante el conteo; actualiza y vuelve a contar')
         count = InventoryCount(empresa_id=user.empresa_id, branch_id=data.branch_id, product_id=product.id, actor_id=user.id,
                                expected=data.expected, counted=data.counted, reason=data.reason.strip(), request_key=idempotency_key)
+        if data.counted < reserved_quantity(db, data.branch_id, data.product_id):
+            raise HTTPException(409, 'El conteo afecta existencias reservadas para cobros pendientes')
         stock.quantity = data.counted
         db.add(count)
         try:
@@ -1715,9 +1735,10 @@ from . import mercado_pago as mp
 
 
 def intent_view(intent):
-    return {'id': intent.id, 'amount': str(intent.amount), 'status': intent.status,
+    return {'id': intent.id, 'amount': str(intent.amount), 'status': intent.status, 'actor_id': intent.actor_id,
             'checkout_url': intent.checkout_url, 'payment_id': intent.payment_id,
-            'created_at': intent.created_at.isoformat()}
+            'created_at': intent.created_at.isoformat(), 'reserved': intent.reservation_active,
+            'review_reason': intent.review_reason}
 
 
 @app.post('/api/payments/checkout', status_code=201)
@@ -1736,16 +1757,27 @@ def create_payment_checkout(data: SaleIn, idempotency_key: str = Header(min_leng
         cash=db.scalar(select(CashSession).where(CashSession.id==data.cash_session_id,CashSession.branch_id==data.branch_id,CashSession.status=='open'))
         if not cash:raise HTTPException(409,'Abre tu turno antes de generar un cobro')
         cash_access(db,user,cash,owner=True)
-        for line in data.items:
-            stock=db.scalar(select(Stock).where(Stock.product_id==line.product_id,Stock.branch_id==data.branch_id))
-            if not stock or stock.quantity<line.quantity:raise HTTPException(409,'Existencias insuficientes')
         intent=db.scalar(select(PaymentIntent).where(PaymentIntent.empresa_id==user.empresa_id,PaymentIntent.request_key==idempotency_key))
         if intent:
             if intent.actor_id!=user.id or intent.payload!=payload:raise HTTPException(409,'Clave utilizada para otro cobro')
             if intent.checkout_url:return intent_view(intent)
             raise HTTPException(409,'Creación previa pendiente de conciliación; no generes otro cobro')
+        snapshot = {}
+        snapshot_total = Decimal(0)
+        for line in data.items:
+            product = db.scalar(select(Product).where(Product.id == line.product_id, Product.empresa_id == user.empresa_id))
+            if product is None or not product.active:
+                raise HTTPException(409, "Producto inválido para checkout")
+            snapshot[str(product.id)] = {k: str(getattr(product,k)) if k in ("price","tax_rate") else getattr(product,k)
+                for k in ("id","name","price","unit","tax_rate","tax_exempt","price_includes_tax")}
+            net, tax, _ = price_line(product, line.quantity, Decimal(0))
+            snapshot_total += net + tax
+            stock=db.scalar(select(Stock).where(Stock.product_id==line.product_id,Stock.branch_id==data.branch_id))
+            if not stock or stock.quantity-reserved_quantity(db,data.branch_id,line.product_id)<line.quantity:raise HTTPException(409,'Existencias insuficientes')
+        if snapshot_total != Decimal(quoted["total"]):
+            raise HTTPException(409, "El precio cambió al crear el checkout; vuelve a cotizar")
         intent=PaymentIntent(id=secrets.token_urlsafe(24),empresa_id=user.empresa_id,branch_id=data.branch_id,actor_id=user.id,
-            payload=payload,amount=Decimal(quoted['total']),request_key=idempotency_key)
+            payload=payload,amount=Decimal(quoted['total']),request_key=idempotency_key,reservation_active=True,price_snapshot=json.dumps(snapshot))
         db.add(intent);db.commit();intent_id=intent.id
     result=mp.call('POST','/checkout/preferences',{'external_reference':intent_id,
         'items':[{'id':intent_id,'title':'LI Punto de Venta · compra','quantity':1,'currency_id':'MXN','unit_price':float(Decimal(quoted['total']))}],
@@ -1776,12 +1808,18 @@ def apply_provider_payment(payment):
         intent=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent.id).with_for_update().execution_options(populate_existing=True))
         pid=str(payment['id'])
         if intent.payment_id and intent.payment_id!=pid:
+            intent.review_reason='Otro pago detectado: '+pid[:100]
+            db.commit()
             raise HTTPException(409,'Hay otro pago para este checkout; requiere conciliación')
         if intent.status=='completed':
             if payment.get('status')!='approved' or Decimal(str(payment.get('transaction_amount_refunded',0)))>0:
-                raise HTTPException(409,'Pago entregado con reembolso o contracargo; revisa conciliación')
+                intent.review_reason='Pago entregado: estado '+str(payment.get('status'))+'; reembolso '+str(payment.get('transaction_amount_refunded',0))
+                db.commit()
+                return intent_view(intent)
             return intent_view(intent)
         intent.payment_id=pid;intent.status='refunded' if Decimal(str(payment.get('transaction_amount_refunded',0)))>0 else str(payment.get('status','pending'))[:40]
+        if intent.status in ('refunded', 'charged_back'):
+            intent.review_reason='Requiere conciliación financiera: '+intent.status
         try:db.commit()
         except IntegrityError:raise HTTPException(409,'Pago ya asociado a otra operación')
         return intent_view(intent)
@@ -1810,6 +1848,36 @@ def list_payments(branch_id:int,user:User=Depends(identity)):
         return [intent_view(i) for i in db.scalars(query.order_by(PaymentIntent.created_at.desc()).limit(100))]
 
 
+@app.post('/api/payments/{intent_id}/reconcile')
+def reconcile_integrated_payment(intent_id: str, user: User = Depends(identity)):
+    require_any(user, 'sale', 'report')
+    from urllib.parse import urlencode
+    config = mp.settings()
+    with Session(engine) as db:
+        intent = db.scalar(select(PaymentIntent).where(PaymentIntent.id == intent_id,
+            PaymentIntent.empresa_id == user.empresa_id))
+        if intent is None or (user.role not in ('admin_general', 'admin_sucursal') and intent.actor_id != user.id):
+            raise HTTPException(404, 'Cobro no encontrado')
+        branch_for(db, user, intent.branch_id)
+        if intent.empresa_id != config['company']:
+            raise HTTPException(403, 'Cuenta de pagos fuera de esta empresa')
+    result = mp.call('GET', '/v1/payments/search?' + urlencode({'external_reference': intent_id, 'limit': 100}))
+    payments = result.get('results', [])
+    if result.get('paging', {}).get('total', len(payments)) > len(payments):
+        raise HTTPException(409, 'Demasiados pagos para conciliación automática')
+    for payment in payments:
+        if str(payment.get('external_reference')) != intent_id:
+            raise HTTPException(502, 'Respuesta del proveedor fuera de esta operación')
+        # Consult the authoritative resource rather than trusting search details.
+        apply_provider_payment(mp.call('GET', '/v1/payments/' + str(payment['id'])))
+    with Session(engine) as db:
+        intent = db.get(PaymentIntent, intent_id)
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=intent.branch_id,
+            actor_id=user.id, action='payment_reconciled', record_id=user.id))
+        db.commit()
+        return intent_view(intent)
+
+
 @app.post('/api/payments/{intent_id}/confirm')
 def confirm_integrated_sale(intent_id:str,user:User=Depends(identity)):
     require(user,'sale')
@@ -1820,7 +1888,7 @@ def confirm_integrated_sale(intent_id:str,user:User=Depends(identity)):
         payment_id=intent.payment_id;payload=json.loads(intent.payload)
         if not payment_id:raise HTTPException(409,'Esperando notificación de Mercado Pago')
     updated=apply_provider_payment(mp.call('GET','/v1/payments/'+payment_id))
-    if updated['status'] not in ('approved','completed'):raise HTTPException(409,'El proveedor no confirma pago aprobado')
+    if updated.get('review_reason') or updated['status'] not in ('approved','completed'):raise HTTPException(409,'El proveedor no confirma pago aprobado')
     return sell(SaleIn(**payload,payment_intent_id=intent_id),'mp-sale-'+intent_id,user)
 
 if os.getenv('APP_ENV', 'demo') != 'production':
@@ -1833,6 +1901,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
     if 'stock' in inspect(engine).get_table_names() and 'minimum' not in {c['name'] for c in inspect(engine).get_columns('stock')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'stock' in inspect(engine).get_table_names() and 'payment_intents' not in inspect(engine).get_table_names():
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'payment_intents' in inspect(engine).get_table_names() and 'reservation_active' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

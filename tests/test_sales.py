@@ -2,7 +2,7 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ['DATABASE_URL'] = 'sqlite:///' + str(Path(tempfile.mkdtemp()) / 'test.db')
+os.environ['DATABASE_URL'] = os.environ.get('TEST_DATABASE_URL') or 'sqlite:///' + str(Path(tempfile.mkdtemp()) / 'test.db')
 os.environ['JWT_SECRET'] = 'test-only-secret-key-not-for-production-123456789'
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -190,3 +190,4 @@ def test_customer_isolation_search_and_sale_link():
         'branch_id':other_branch,'name':'Intento ajeno'}).status_code == 404
     assert client.put(f'/api/customers/{customer_id}', headers=CASHIER, json={
         'branch_id':2,'name':'Sin sucursal'}).status_code == 403
+
