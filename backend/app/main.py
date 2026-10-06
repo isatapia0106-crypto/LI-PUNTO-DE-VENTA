@@ -282,6 +282,13 @@ class SaleItem(Base):
 
 class SaleReturn(Base):
     __tablename__ = 'sale_returns'
+    status: Mapped[str] = mapped_column(String(30), default='completed', server_default='completed')
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_payment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_key: Mapped[str | None] = mapped_column(String(60), nullable=True, unique=True)
+    provider_refund_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_refunded_before: Mapped[Decimal | None] = mapped_column(Numeric(12,2), nullable=True)
     kind: Mapped[str] = mapped_column(String(20), default='return', server_default='return')
     id: Mapped[int] = mapped_column(primary_key=True)
     empresa_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -588,7 +595,7 @@ def cash_cut(db, session):
         for method in ('cash', 'card', 'transfer', 'mercado_pago')}
     # External refunds concern tickets issued in this shift. Cash refunds concern
     # money actually paid out by this shift, including tickets from earlier shifts.
-    returns = db.scalars(select(SaleReturn).where(SaleReturn.sale_id.in_([s.id for s in sales]))).all() if sales else []
+    returns = db.scalars(select(SaleReturn).where(SaleReturn.status == 'completed', SaleReturn.sale_id.in_([s.id for s in sales]))).all() if sales else []
     if session.closed_at:
         cutoff = session.closed_at.replace(tzinfo=None)
         returns = [r for r in returns if r.created_at.replace(tzinfo=None) <= cutoff]
@@ -1194,7 +1201,7 @@ def sales(branch_id: int, user: User = Depends(identity)):
     with Session(engine) as db:
         branch_for(db, user, branch_id)
         rows = db.scalars(select(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id).order_by(Sale.id.desc()).limit(30)).all()
-        return [{'id': s.id, 'folio': s.folio, 'status': 'cancelled' if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == s.id, SaleReturn.kind == 'cancellation')) else 'completed', 'total': str(s.total), 'created_at': s.created_at.isoformat(), 'payment_method': s.payment_method} for s in rows]
+        return [{'id': s.id, 'folio': s.folio, 'status': 'cancelled' if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == s.id, SaleReturn.kind == 'cancellation', SaleReturn.status == 'completed')) else 'completed', 'total': str(s.total), 'created_at': s.created_at.isoformat(), 'payment_method': s.payment_method} for s in rows]
 
 @app.get('/api/sales/{sale_id}')
 def sale_detail(sale_id: int, user: User = Depends(identity)):
@@ -1209,7 +1216,7 @@ def sale_detail(sale_id: int, user: User = Depends(identity)):
             'folio': sale.folio, 'discount_total': str(sale.discount_total), 'discount_percent': str(sale.discount_percent),
             'discount_reason': sale.discount_reason, 'discount_approved_by': sale.discount_approved_by,
             'cash_session_id': sale.cash_session_id, 'actor_id': sale.actor_id,
-            'status': 'cancelled' if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id, SaleReturn.kind == 'cancellation')) else 'completed',
+            'status': 'cancelled' if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id, SaleReturn.kind == 'cancellation', SaleReturn.status == 'completed')) else 'completed',
             'id': sale.id, 'branch_id': branch.id, 'branch_name': branch.name,
             'customer_id': sale.customer_id, 'customer_name': sale.customer_name or (customer.name if customer else None),
             'created_at': sale.created_at.isoformat(), 'payment_method': sale.payment_method,
@@ -1241,7 +1248,7 @@ class ReturnIn(BaseModel):
 
 
 def returned_quantities(db, sale_id):
-    rows = db.scalars(select(SaleReturnItem).join(SaleReturn).where(SaleReturn.sale_id == sale_id)).all()
+    rows = db.scalars(select(SaleReturnItem).join(SaleReturn).where(SaleReturn.sale_id == sale_id, SaleReturn.status == 'completed')).all()
     totals = {}
     for item in rows:
         totals[item.sale_item_id] = totals.get(item.sale_item_id, 0) + item.quantity
@@ -1250,6 +1257,8 @@ def returned_quantities(db, sale_id):
 
 def return_view(record, replayed=False):
     return {'id': record.id, 'kind': record.kind, 'sale_id': record.sale_id, 'total': str(record.total),
+            'status':record.status,'provider_refund_id':record.provider_refund_id,
+            'requested_at':record.requested_at.isoformat() if record.requested_at else None,
             'reason': record.reason, 'actor_id': record.actor_id, 'cash_session_id': record.cash_session_id,
             'payment_reference': record.payment_reference, 'created_at': record.created_at.isoformat(),
             'items': [{'sale_item_id': x.sale_item_id, 'quantity': x.quantity, 'restock': x.restock,
@@ -1287,7 +1296,7 @@ def create_return(sale_id: int, data: ReturnIn, idempotency_key: str = Header(mi
     return process_return(sale_id, data, idempotency_key, user)
 
 
-def process_return(sale_id, data, idempotency_key, user, cancellation=False):
+def prepare_return(sale_id, data, idempotency_key, user, cancellation=False):
     require(user, 'sale_cancel' if cancellation else 'sale_return')
     ids = [x.sale_item_id for x in data.items]
     if len(ids) != len(set(ids)):
@@ -1307,6 +1316,8 @@ def process_return(sale_id, data, idempotency_key, user, cancellation=False):
             if existing.actor_id != user.id or (json.loads(existing.payload) | {'kind': existing.kind}) != json.loads(payload):
                 raise HTTPException(409, 'Clave de devolución utilizada para otra operación')
             return return_view(existing, True)
+        if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id, SaleReturn.status != 'completed')):
+            raise HTTPException(409, 'Hay una devolución pendiente de confirmar; reintenta esa operación')
         if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id, SaleReturn.kind == 'cancellation')):
             raise HTTPException(409, 'La venta ya está cancelada')
         if cancellation and db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id)):
@@ -1317,6 +1328,9 @@ def process_return(sale_id, data, idempotency_key, user, cancellation=False):
                 CashSession.empresa_id == user.empresa_id, CashSession.branch_id == sale.branch_id).with_for_update())
             if cash is None or cash.status != 'open':
                 raise HTTPException(409, 'Selecciona un turno abierto de la misma sucursal para reembolsar')
+        elif sale.payment_method == 'mercado_pago':
+            if data.cash_session_id is not None or data.payment_reference:
+                raise HTTPException(422, 'La devolución integrada no utiliza efectivo ni referencia manual')
         elif not data.payment_reference:
             raise HTTPException(422, 'Indica la referencia del reembolso externo realizado')
         elif data.cash_session_id is not None:
@@ -1343,26 +1357,120 @@ def process_return(sale_id, data, idempotency_key, user, cancellation=False):
             payload=payload, total=total, request_key=idempotency_key, items=lines)
         db.add(record)
         db.flush()
-        for incoming in sorted(data.items, key=lambda x: by_id[x.sale_item_id].product_id):
-            if not incoming.restock:
-                continue
-            item = by_id[incoming.sale_item_id]
-            stock = db.scalar(select(Stock).where(Stock.product_id == item.product_id, Stock.branch_id == sale.branch_id).with_for_update())
-            if stock is None:
-                raise HTTPException(409, 'Existencia de la venta no encontrada; revisa el inventario')
-            new_quantity = stock.quantity + incoming.quantity
-            stock.average_cost = ((stock.average_cost * stock.quantity + item.cost * incoming.quantity) / new_quantity).quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
-            stock.quantity = new_quantity
-            db.add(StockMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, product_id=item.product_id,
-                actor_id=user.id, change=incoming.quantity, reason='sale_cancel' if cancellation else 'sale_return', reference_id=record.id))
-        if cash:
-            db.add(CashMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, session_id=cash.id,
-                actor_id=user.id, amount=total, kind='refund', reason=f'Devolución #{record.id}: {data.reason}'[:160]))
-        db.add(Audit(empresa_id=user.empresa_id, branch_id=sale.branch_id, actor_id=user.id, action='sale_cancel' if cancellation else 'sale_return', record_id=record.id))
-        db.flush()
-        result = return_view(record)
-        db.commit()
-        return result
+        if sale.payment_method == 'mercado_pago':
+            config=mp.settings()
+            intent=db.scalar(select(PaymentIntent).where(PaymentIntent.empresa_id==user.empresa_id,
+                PaymentIntent.id==sale.request_key.removeprefix('mp-sale-')))
+            if (intent is None or intent.status!='completed' or not intent.payment_id
+                or intent.empresa_id!=config['company'] or intent.amount!=sale.total):
+                raise HTTPException(409,'No se identifica el pago integrado del ticket')
+            if total<=0:
+                raise HTTPException(409,'La devolución integrada debe tener un importe positivo')
+            import uuid
+            record.status='pending';record.requested_at=datetime.now(timezone.utc)
+            record.provider_key=str(uuid.uuid4());record.provider_payment_id=intent.payment_id
+            record.provider_refunded_before=sum((r.total for r in db.scalars(select(SaleReturn).where(
+                SaleReturn.sale_id==sale.id,SaleReturn.status=='completed'))),Decimal(0))
+            # Stock rows must exist before any external refund is requested.
+            for incoming in data.items:
+                if incoming.restock and not db.scalar(select(Stock.id).where(Stock.product_id==by_id[incoming.sale_item_id].product_id,Stock.branch_id==sale.branch_id)):
+                    raise HTTPException(409,'Existencia no encontrada; revisa el inventario antes de reembolsar')
+            db.add(Audit(empresa_id=user.empresa_id,branch_id=sale.branch_id,actor_id=user.id,
+                action='integrated_return_requested',record_id=record.id))
+            db.commit()
+            return return_view(record)
+        return apply_return_record(db,sale,record,data,user,cash)
+
+
+def apply_return_record(db, sale, record, data, user, cash=None):
+    by_id={x.id:x for x in sale.items}
+    total=record.total
+    cancellation=record.kind=='cancellation'
+    if record.status!='completed':
+        record.created_at=datetime.now(timezone.utc)
+    record.status='completed';record.finalized_at=datetime.now(timezone.utc)
+    for incoming in sorted(data.items, key=lambda x: by_id[x.sale_item_id].product_id):
+        if not incoming.restock:
+            continue
+        item = by_id[incoming.sale_item_id]
+        stock = db.scalar(select(Stock).where(Stock.product_id == item.product_id, Stock.branch_id == sale.branch_id).with_for_update())
+        if stock is None:
+            raise HTTPException(409, 'Existencia de la venta no encontrada; revisa el inventario')
+        new_quantity = stock.quantity + incoming.quantity
+        stock.average_cost = ((stock.average_cost * stock.quantity + item.cost * incoming.quantity) / new_quantity).quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
+        stock.quantity = new_quantity
+        db.add(StockMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, product_id=item.product_id,
+            actor_id=user.id, change=incoming.quantity, reason='sale_cancel' if cancellation else 'sale_return', reference_id=record.id))
+    if cash:
+        db.add(CashMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, session_id=cash.id,
+            actor_id=user.id, amount=total, kind='refund', reason=f'Devolución #{record.id}: {data.reason}'[:160]))
+    db.add(Audit(empresa_id=user.empresa_id, branch_id=sale.branch_id, actor_id=user.id, action='sale_cancel' if cancellation else 'sale_return', record_id=record.id))
+    db.flush()
+    result = return_view(record)
+    db.commit()
+    return result
+
+
+def process_return(sale_id, data, idempotency_key, user, cancellation=False):
+    result=prepare_return(sale_id,data,idempotency_key,user,cancellation)
+    if result['status']=='completed':return result
+    return complete_integrated_return(result['id'],user)
+
+
+def complete_integrated_return(return_id, user):
+    config=mp.settings()
+    with Session(engine) as db:
+        record=db.scalar(select(SaleReturn).where(SaleReturn.id==return_id,SaleReturn.empresa_id==user.empresa_id))
+        if record is None:raise HTTPException(404,'Devolución no encontrada')
+        require(user,'sale_cancel' if record.kind=='cancellation' else 'sale_return')
+        sale=db.get(Sale,record.sale_id);branch_for(db,user,sale.branch_id)
+        if record.status=='completed':return return_view(record,True)
+        intent=db.get(PaymentIntent,sale.request_key.removeprefix('mp-sale-'))
+        if (intent is None or intent.payment_id!=record.provider_payment_id or intent.empresa_id!=config['company']):
+            raise HTTPException(409,'No se identifica el pago del ticket')
+        db.expunge(intent)
+        amount=record.total;baseline=record.provider_refunded_before;key=record.provider_key
+        payment_id=record.provider_payment_id;branch_id=sale.branch_id
+    payment=mp.call('GET','/v1/payments/'+payment_id)
+    validate_cancel_payment(payment,intent,config)
+    if str(payment.get('id'))!=payment_id or payment.get('status') not in ('approved','refunded'):
+        raise HTTPException(409,'Pago no reembolsable; operación pendiente')
+    refunded=Decimal(str(payment.get('transaction_amount_refunded',0)))
+    target=baseline+amount
+    if refunded==baseline:
+        result=mp.call('POST','/v1/payments/'+payment_id+'/refunds',{'amount':float(amount)},key=key)
+        if str(result.get('payment_id'))!=payment_id or Decimal(str(result.get('amount',0)))!=amount:
+            raise HTTPException(502,'Respuesta de reembolso inválida; operación pendiente')
+        with Session(engine) as db:
+            stored=db.get(SaleReturn,return_id)
+            stored.provider_refund_id=str(result.get('id',''))[:100] or None
+            db.commit()
+        payment=mp.call('GET','/v1/payments/'+payment_id)
+        validate_cancel_payment(payment,intent,config)
+        refunded=Decimal(str(payment.get('transaction_amount_refunded',0)))
+    if refunded!=target or payment.get('status') not in ('approved','refunded'):
+        raise HTTPException(409,'El reembolso del proveedor no coincide con la devolución pendiente; conserva la operación y vuelve a consultar')
+    with Session(engine) as db:
+        db.scalar(select(Branch).where(Branch.id==branch_id).with_for_update())
+        record=db.scalar(select(SaleReturn).where(SaleReturn.id==return_id).with_for_update().execution_options(populate_existing=True))
+        if record.status=='completed':return return_view(record,True)
+        sale=db.get(Sale,record.sale_id)
+        completed=sum((r.total for r in db.scalars(select(SaleReturn).where(SaleReturn.sale_id==sale.id,SaleReturn.status=='completed'))),Decimal(0))
+        if completed!=baseline:
+            raise HTTPException(409,'Cambió la conciliación local; operación pendiente')
+        current=db.get(PaymentIntent,intent.id)
+        record.payment_reference='MP:'+ (record.provider_refund_id or ('verificado-'+str(record.id)))[:97]
+        record_payment_observation(db,current,payment)
+        # A verified primary refund remains reconcilable against the completed
+        # return ledger; never clear unrelated duplicate/chargeback alerts here.
+        data=ReturnIn(**json.loads(record.payload))
+        return apply_return_record(db,sale,record,data,user)
+
+
+@app.post('/api/returns/{return_id}/retry')
+def retry_integrated_return(return_id:int,user:User=Depends(identity)):
+    return complete_integrated_return(return_id,user)
+
 
 class CancelSaleIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -1389,7 +1497,7 @@ def summary(branch_id: int, user: User = Depends(identity)):
     with Session(engine) as db:
         branch_for(db, user, branch_id)
         rows = db.scalars(select(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id)).all()
-        returns = db.scalars(select(SaleReturn).join(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id)).all()
+        returns = db.scalars(select(SaleReturn).join(Sale).where(SaleReturn.status == 'completed', Sale.empresa_id == empresa, Sale.branch_id == branch_id)).all()
         methods = {s.id: s.payment_method for s in rows}
         refunded = sum((r.total for r in returns), Decimal('0'))
         by_method = {method: str(money(sum((s.total for s in rows if s.payment_method == method), Decimal('0')) - sum((r.total for r in returns if methods[r.sale_id] == method), Decimal('0')))) for method in ('cash', 'card', 'transfer', 'mercado_pago')}
@@ -1720,7 +1828,7 @@ def build_report(db, user, branch_id, start, end, cashier_id):
         if not db.scalar(select(User.id).where(User.id == cashier_id, User.empresa_id == user.empresa_id)):
             raise HTTPException(404, 'Cajero no encontrado')
     sale_query = select(Sale).where(Sale.empresa_id == user.empresa_id, Sale.branch_id == branch_id, Sale.created_at >= lower, Sale.created_at < upper)
-    return_query = select(SaleReturn).join(Sale).where(Sale.empresa_id == user.empresa_id, Sale.branch_id == branch_id, SaleReturn.created_at >= lower, SaleReturn.created_at < upper)
+    return_query = select(SaleReturn).join(Sale).where(SaleReturn.status == 'completed', Sale.empresa_id == user.empresa_id, Sale.branch_id == branch_id, SaleReturn.created_at >= lower, SaleReturn.created_at < upper)
     if cashier_id:
         sale_query = sale_query.where(Sale.actor_id == cashier_id)
         return_query = return_query.where(Sale.actor_id == cashier_id)
@@ -1906,7 +2014,9 @@ def apply_provider_payment(payment):
             db.commit()
             raise HTTPException(409,'Hay otro pago para este checkout; requiere conciliación')
         if intent.status=='completed':
-            if payment.get('status')!='approved' or Decimal(str(payment.get('transaction_amount_refunded',0)))>0:
+            sale=db.scalar(select(Sale).where(Sale.empresa_id==intent.empresa_id,Sale.request_key=='mp-sale-'+intent.id))
+            local_refunded=sum((r.total for r in db.scalars(select(SaleReturn).where(SaleReturn.sale_id==sale.id,SaleReturn.status=='completed'))),Decimal(0)) if sale else Decimal(0)
+            if payment.get('status') not in ('approved','refunded') or Decimal(str(payment.get('transaction_amount_refunded',0)))!=local_refunded:
                 intent.review_reason='Pago entregado: estado '+str(payment.get('status'))+'; reembolso '+str(payment.get('transaction_amount_refunded',0))
                 db.commit()
                 return intent_view(intent)
@@ -2249,8 +2359,11 @@ def resolve_payment_incident(intent_id: str, user: User = Depends(identity)):
         candidates=[]
         for pid,pay in observations.items():
             if delivered and pid==current.payment_id:
-                if pay.get('status')!='approved' or Decimal(str(pay.get('transaction_amount_refunded',0)))!=0:
-                    raise HTTPException(409,'El ticket entregado tiene reembolso o contracargo; concilia su devolución')
+                local_refunded=sum((r.total for r in db.scalars(select(SaleReturn).where(SaleReturn.sale_id==delivered.id,SaleReturn.status=='completed'))),Decimal(0))
+                if pay.get('status') not in ('approved','refunded') or Decimal(str(pay.get('transaction_amount_refunded',0)))!=local_refunded:
+                    raise HTTPException(409,'El reembolso o contracargo del ticket no coincide con sus devoluciones')
+                if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id==delivered.id,SaleReturn.status!='completed')):
+                    raise HTTPException(409,'Hay una devolución pendiente de confirmar')
             elif pay.get('status') not in ('cancelled','rejected') and not fully_refunded(pay):
                 if (not delivered and not current.cancel_requested_at and pay.get('status')=='approved'
                     and Decimal(str(pay.get('transaction_amount_refunded',0)))==0):
@@ -2325,6 +2438,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
     if 'payment_intents' in inspect(engine).get_table_names() and 'delivery_cash_session_id' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'payment_intents' in inspect(engine).get_table_names() and not {'payment_refunds','payment_observations'} <= set(inspect(engine).get_table_names()):
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'sale_returns' in inspect(engine).get_table_names() and 'status' not in {c['name'] for c in inspect(engine).get_columns('sale_returns')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

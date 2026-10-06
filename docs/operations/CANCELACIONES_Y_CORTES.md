@@ -2,13 +2,13 @@
 
 ## Cancelar una venta
 
-En Últimas ventas, administración puede seleccionar Cancelar venta. Se confirma el motivo, importe completo y turno que entrega efectivo o referencia de reembolso externo. La cancelación devuelve todas las unidades al inventario y conserva el ticket original con estado Cancelada, responsable, auditoría y comprobante. No elimina ventas ni cancela CFDI ni envía dinero a una terminal.
+En Últimas ventas, administración puede seleccionar Cancelar venta. Se confirma el motivo, importe completo y turno que entrega efectivo o referencia de reembolso externo. La cancelación devuelve todas las unidades al inventario y conserva el ticket original con estado Cancelada, responsable, auditoría y comprobante. No elimina ventas ni cancela CFDI ni envía dinero a una terminal. Para Mercado Pago solicita el reembolso integrado y marca Cancelada sólo después de verificarlo; mientras tanto, el historial permite reintentar la solicitud.
 
 Una venta con devoluciones anteriores no se puede cancelar: se completa la devolución de las cantidades pendientes. Una venta cancelada bloquea devoluciones nuevas y otra cancelación. Los reintentos de la misma operación no duplican inventario ni reembolso. Se aplica el precio, descuento e impuestos históricos.
 
 ## Corte
 
-Cajas y turnos → Historial de turnos → Ver corte muestra un corte provisional si el turno está abierto. Incluye ventas e importes por efectivo, tarjeta y transferencia, reembolsos de tickets del turno, fondo, entradas, retiros, reembolsos efectivamente entregados por el turno, esperado, contado y diferencia. Se puede imprimir desde el comprobante.
+Cajas y turnos → Historial de turnos → Ver corte muestra un corte provisional si el turno está abierto. Incluye ventas e importes por efectivo, tarjeta, transferencia y Mercado Pago, reembolsos de tickets del turno, fondo, entradas, retiros, reembolsos efectivamente entregados por el turno, esperado, contado y diferencia. Se puede imprimir desde el comprobante.
 
 El efectivo esperado usa fondo + ventas en efectivo + entradas - retiros - reembolsos entregados. Tarjeta y transferencia son registros manuales y no aumentan el efectivo esperado. Los reembolsos de tickets y el efectivo entregado son perspectivas diferentes, no cantidades que deban sumarse entre sí.
 
@@ -22,4 +22,4 @@ Detén el servidor, ejecuta git pull y después INICIAR_LI_POS.bat. El iniciador
 
 python -m pytest tests/test_cancel_cut.py tests/test_returns.py tests/test_operations.py tests/test_sales.py tests/test_operations_migration.py -q
 
-Validación SQLite: cancelación completa, reintentos, permisos/empresa, bloqueo de devoluciones previas, concurrencia, caja insuficiente, reembolso externo, pagos mixtos, cierre con diferencia, snapshot estable ante cancelación posterior y migraciones. Falta validar visualmente en navegador y ejecutar las pruebas en PostgreSQL antes de producción.
+Validación SQLite: cancelación completa, reintentos, permisos/empresa, bloqueo de devoluciones previas, concurrencia, caja insuficiente, reembolso externo, pagos mixtos, cierre con diferencia, snapshot estable ante cancelación posterior y migraciones. Las pruebas PostgreSQL están automatizadas en GitHub Actions. Falta validar visualmente en los equipos y probar operaciones controladas con Mercado Pago.

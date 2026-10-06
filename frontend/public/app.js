@@ -309,15 +309,16 @@ document.querySelectorAll('[data-reset-search]').forEach(button=>button.onclick=
 $('loginDialog').addEventListener('cancel',e=>e.preventDefault());$('loginDialog').showModal();
 
 
-let returnSale=null, savingReturn=false, cancellationMode=false;
+let returnSale=null, savingReturn=false, cancellationMode=false, pendingReturn=false;
 async function openReturn(id,cancel=false){
  const sale=await request(`/api/sales/${id}`),history=await request(`/api/sales/${id}/returns`);
- if(!can('sale_return')){showText(['DEVOLUCIONES',`Ticket ${sale.folio??sale.id}`,...history.map(r=>`Devolución #${r.id} · ${fecha(r.created_at)} · ${pesos(r.total)} · ${r.reason}`),...(!history.length?['Sin devoluciones']:[])].join('\n'));return;}
+ if(!can('sale_return')){showText(['DEVOLUCIONES',`Ticket ${sale.folio??sale.id}`,...history.map(r=>`${r.kind==='cancellation'?'Cancelación':'Devolución'} #${r.id} · ${r.status==='pending'?'Pendiente':'Confirmada'} · ${fecha(r.created_at)} · ${pesos(r.total)} · ${r.reason}`),...(!history.length?['Sin devoluciones']:[])].join('\n'));return;}
  if(cancel&&history.length)throw Error('La venta tiene devoluciones. Devuelve las unidades pendientes.');
  if(sale.status==='cancelled'){showText(['VENTA CANCELADA',`Ticket ${sale.folio??sale.id}`,...history.map(r=>`Registro #${r.id} · ${pesos(r.total)} · ${r.reason}`)].join('\n'));return;}
- cancellationMode=cancel;returnSale=sale;$('returnTitle').textContent=cancel?'Cancelar venta completa':'Devolver productos';$('saveReturn').textContent=cancel?'Confirmar cancelación':'Confirmar devolución';$('returnForm').reset();$('returnError').textContent='';
+ pendingReturn=history.some(r=>r.status==='pending');cancellationMode=cancel;returnSale=sale;$('returnTitle').textContent=cancel?'Cancelar venta completa':'Devolver productos';$('saveReturn').textContent=cancel?'Confirmar cancelación':'Confirmar devolución';$('returnForm').reset();$('returnError').textContent='';
  $('returnSaleInfo').textContent=`${sale.folio??'#'+sale.id} · Total original ${pesos(sale.total)} · ${history.length} devoluciones registradas`;
- $('returnHistory').replaceChildren(...history.map(r=>node('div',`Devolución #${r.id} · ${pesos(r.total)} · ${r.reason} · ${fecha(r.created_at)}`,'sale')));
+ $('returnHistory').replaceChildren(...history.map(r=>{const row=node('div',undefined,'sale');row.append(node('span',`${r.kind==='cancellation'?'Cancelación':'Devolución'} #${r.id} · ${pesos(r.total)} · ${r.status==='pending'?'Pendiente de confirmar':'Confirmada'} · ${r.reason} · ${fecha(r.created_at)}`));
+ if(r.status==='pending')row.append(button('Consultar y reintentar reembolso',async()=>{const result=await post(`/api/returns/${r.id}/retry`,{});await refresh();await openReturn(id);notice(result.status==='completed'?'Reembolso y devolución confirmados.':'Reembolso pendiente de confirmar.');}));return row;}));
  $('returnLines').replaceChildren(...sale.items.map(i=>{
   const remaining=i.quantity-i.returned_quantity,row=node('div',undefined,'return-line');
   const label=node('label',`${i.name} · Vendidos ${i.quantity} · Pendientes ${remaining}`),qty=node('input');
@@ -325,11 +326,11 @@ async function openReturn(id,cancel=false){
   const restockLabel=node('label','Reintegrar al inventario','check'),restock=node('input');restock.type='checkbox';restock.checked=true;restock.dataset.restockId=i.id;restock.disabled=cancel||!remaining;restockLabel.prepend(restock);
   row.append(label,restockLabel);return row;
  }));
- const cash=sale.payment_method==='cash';$('returnCashLabel').hidden=!cash;$('returnReferenceLabel').hidden=cash;$('returnReference').required=!cash;
- $('returnPaymentHelp').textContent=cash?'El efectivo se descontará del turno seleccionado. Revisa y entrega el reembolso al confirmar.':'Realiza primero el reembolso en el proveedor de pago y registra su referencia. Esta aplicación no envía dinero ni cancela CFDI.';
+ const cash=sale.payment_method==='cash',integrated=sale.payment_method==='mercado_pago';$('returnCashLabel').hidden=!cash;$('returnReferenceLabel').hidden=cash||integrated;$('returnReference').required=!cash&&!integrated;
+ $('returnPaymentHelp').textContent=integrated?'La aplicación solicitará el reembolso a Mercado Pago. El inventario y los reportes cambian sólo al confirmarse. Si falla, consulta la devolución pendiente y reintenta.':cash?'El efectivo se descontará del turno seleccionado. Revisa y entrega el reembolso al confirmar.':'Realiza primero el reembolso en el proveedor de pago y registra su referencia. Esta aplicación no envía dinero ni cancela CFDI.';
  if(cash){const turns=await request(`/api/cash/sessions?branch_id=${sale.branch_id}`);options('returnCash',turns.filter(t=>t.open),t=>`Turno #${t.id} · ${t.register_name} · ${t.cashier_name} · Disponible ${pesos(t.expected)}`);}
  updateReturnTotal();
- $('saveReturn').disabled=!sale.items.some(i=>i.quantity>i.returned_quantity&&i.refundable_total!==null)||(cash&&!$('returnCash').value);$('returnDialog').showModal();
+ $('saveReturn').disabled=pendingReturn||!sale.items.some(i=>i.quantity>i.returned_quantity&&i.refundable_total!==null)||(cash&&!$('returnCash').value);if(!$('returnDialog').open)$('returnDialog').showModal();
 }
 $('cancelReturn').onclick=()=>{if(!savingReturn)$('returnDialog').close();};
 $('returnDialog').addEventListener('cancel',e=>{if(savingReturn)e.preventDefault();});
@@ -337,15 +338,16 @@ $('returnForm').onsubmit=async e=>{
  e.preventDefault();if(savingReturn||!returnSale)return;
  const sale=returnSale,items=[...$('returnLines').querySelectorAll('[data-item-id]')].filter(i=>Number(i.value)>0).map(i=>({sale_item_id:Number(i.dataset.itemId),quantity:Number(i.value),restock:$('returnLines').querySelector(`[data-restock-id="${i.dataset.itemId}"]`).checked}));
  if(!items.length){$('returnError').textContent='Selecciona al menos una unidad.';return;}
- if(!confirm(cancellationMode?'¿Cancelar la venta completa, reintegrar productos y registrar el reembolso?':'¿Confirmar la devolución y registrar el reembolso?'))return;
- const data={reason:$('returnReason').value.trim(),items,cash_session_id:sale.payment_method==='cash'?Number($('returnCash').value):null,payment_reference:sale.payment_method==='cash'?null:$('returnReference').value.trim()};
+ if(!confirm(sale.payment_method==='mercado_pago'?'¿Solicitar este reembolso a Mercado Pago? La devolución y el inventario se aplicarán cuando se confirme.':cancellationMode?'¿Cancelar la venta completa, reintegrar productos y registrar el reembolso?':'¿Confirmar la devolución y registrar el reembolso?'))return;
+ const data={reason:$('returnReason').value.trim(),items,cash_session_id:sale.payment_method==='cash'?Number($('returnCash').value):null,payment_reference:['cash','mercado_pago'].includes(sale.payment_method)?null:$('returnReference').value.trim()};
  savingReturn=true;for(const el of $('returnForm').elements)el.disabled=true;$('returnError').textContent='';
  try{const action=cancellationMode?'cancel':'returns',payload=cancellationMode?Object.fromEntries(Object.entries(data).filter(([k])=>k!=='items')):data;const r=await post(`/api/sales/${sale.id}/${action}`,payload,true);$('returnDialog').close();returnSale=null;
+  if(r.status==='pending'){await refresh();await openReturn(sale.id);notice('Reembolso pendiente de confirmar. Conserva esta operación y reintenta desde su historial.');return;}
   notice(`${r.kind==='cancellation'?'Cancelación':'Devolución'} #${r.id} registrada por ${pesos(r.total)}`);
   try{await refresh();}catch(error){notice('Operación guardada. Actualiza la pantalla: '+error.message);}
   showText(['LI PUNTO DE VENTA',`${r.kind==='cancellation'?'Cancelación':'Devolución'} #${r.id}`,`Ticket original ${sale.folio??sale.id}`,fecha(r.created_at),`Motivo: ${r.reason}`,`Autorizó usuario #${r.actor_id}`,
-   ...r.items.map(i=>`${sale.items.find(x=>x.id===i.sale_item_id).name} · ${i.quantity} · ${pesos(i.total)} · ${i.restock?'Reintegrado':'Sin reintegro'}`),`Reembolso: ${pesos(r.total)}`,r.cash_session_id?`Efectivo · Turno #${r.cash_session_id}`:`Reembolso externo manual · ${r.payment_reference}`,'Comprobante interno sin CFDI'].join('\n'));
- }catch(error){$('returnError').textContent=error.message;}finally{savingReturn=false;for(const el of $('returnForm').elements)el.disabled=false;}
+   ...r.items.map(i=>`${sale.items.find(x=>x.id===i.sale_item_id).name} · ${i.quantity} · ${pesos(i.total)} · ${i.restock?'Reintegrado':'Sin reintegro'}`),`Reembolso: ${pesos(r.total)}`,r.cash_session_id?`Efectivo · Turno #${r.cash_session_id}`:`${sale.payment_method==='mercado_pago'?'Mercado Pago confirmado':'Reembolso externo manual'} · ${r.payment_reference}`,'Comprobante interno sin CFDI'].join('\n'));
+ }catch(error){const message=error.message;if(sale.payment_method==='mercado_pago'){await refresh().catch(()=>{});await openReturn(sale.id).catch(()=>{});}$('returnError').textContent=message;}finally{savingReturn=false;for(const el of $('returnForm').elements)el.disabled=false;if(pendingReturn)$('saveReturn').disabled=true;}
 };
 
 function updateReturnTotal(){

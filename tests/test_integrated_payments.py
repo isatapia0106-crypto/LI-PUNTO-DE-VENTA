@@ -396,3 +396,115 @@ def test_external_full_refund_can_be_resolved_then_cancelled_without_new_refund(
     assert r.json()['cancellation_pending'] and not r.json()['review_reason']
     assert cancel(intent,headers).json()['reserved'] is False
     assert not state['refund_calls']
+
+
+def delivered_for_return(refund_provider,quantity=3,**product_fields):
+    import uuid
+    headers,_=actor();turn=opened(headers)
+    pid=product(stock=5,price='.08',tax_rate='.16',initial_cost='2',**product_fields)
+    data=payload(pid,turn,items=[{'product_id':pid,'quantity':quantity}])
+    r=client.post('/api/payments/checkout',headers={**headers,'Idempotency-Key':uuid.uuid4().hex},json=data)
+    assert r.status_code==201,r.text
+    intent=r.json();state=refund_provider(intent);pay=payment(intent)
+    state['payments'][str(pay['id'])]=pay;assert notify(pay).status_code==200
+    sale=client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={})
+    assert sale.status_code==200,sale.text
+    detail=client.get(f"/api/sales/{sale.json()['id']}",headers=ADMIN).json()
+    return headers,turn,pid,intent,state,pay,detail
+
+
+def integrated_return_data(sale,qty=1,restock=True):
+    return {'reason':'Devolución con reembolso integrado','cash_session_id':None,'payment_reference':None,
+        'items':[{'sale_item_id':sale['items'][0]['id'],'quantity':qty,'restock':restock}]}
+
+
+def test_integrated_partial_returns_cumulative_cents_and_reports(refund_provider):
+    import uuid
+    from backend.app.main import SaleReturn, Stock, CashMovement
+    headers,turn,pid,intent,state,pay,sale=delivered_for_return(refund_provider)
+    totals=[]
+    for i in range(3):
+        key={**ADMIN,'Idempotency-Key':uuid.uuid4().hex};data=integrated_return_data(sale,restock=i!=1)
+        r=client.post(f"/api/sales/{sale['id']}/returns",headers=key,json=data)
+        assert r.status_code==201,r.text
+        assert r.json()['status']=='completed' and r.json()['payment_reference'].startswith('MP:')
+        totals.append(Decimal(r.json()['total']))
+        repeated=client.post(f"/api/sales/{sale['id']}/returns",headers=key,json=data)
+        assert repeated.json()['id']==r.json()['id'] and repeated.json()['replayed']
+    assert sum(totals)==Decimal(sale['total']) and len(set(totals))>1
+    assert len(state['refunds'])==3 and Decimal(pay['transaction_amount_refunded'])==Decimal(sale['total'])
+    with Session(engine) as db:
+        assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==4
+        assert not db.scalars(select(CashMovement).where(CashMovement.session_id==turn['id'],CashMovement.kind=='refund')).all()
+        assert len(db.scalars(select(SaleReturn).where(SaleReturn.sale_id==sale['id'],SaleReturn.status=='completed')).all())==3
+    assert client.get(f"/api/sales/{sale['id']}",headers=ADMIN).json()['items'][0]['returned_quantity']==3
+    notify(pay)
+    assert client.post(f"/api/payments/{intent['id']}/resolve",headers=ADMIN,json={}).status_code==200
+
+
+@pytest.mark.parametrize('timing',['before','after'])
+def test_integrated_return_timeout_keeps_stock_reports_and_reserves_quantities(refund_provider,timing):
+    import uuid
+    from backend.app.main import SaleReturn, Stock
+    _,_,pid,_,state,pay,sale=delivered_for_return(refund_provider)
+    before=client.get('/api/reports/summary?branch_id=6',headers=ADMIN).json()
+    state['timeout']=timing;key={**ADMIN,'Idempotency-Key':uuid.uuid4().hex};data=integrated_return_data(sale)
+    assert client.post(f"/api/sales/{sale['id']}/returns",headers=key,json=data).status_code==502
+    record=client.get(f"/api/sales/{sale['id']}/returns",headers=ADMIN).json()[0]
+    assert record['status']=='pending'
+    with Session(engine) as db:assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==2
+    assert client.get('/api/reports/summary?branch_id=6',headers=ADMIN).json()==before
+    assert client.get(f"/api/sales/{sale['id']}",headers=ADMIN).json()['items'][0]['returned_quantity']==0
+    assert client.post(f"/api/sales/{sale['id']}/returns",headers={**ADMIN,'Idempotency-Key':uuid.uuid4().hex},json=data).status_code==409
+    assert client.post(f"/api/returns/{record['id']}/retry",headers=OUTSIDER,json={}).status_code==404
+    r=client.post(f"/api/returns/{record['id']}/retry",headers=ADMIN,json={});assert r.status_code==200,r.text
+    assert r.json()['status']=='completed' and len(state['refunds'])==1
+    assert len({k for k,_ in state['refund_calls']})==1
+    with Session(engine) as db:assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==3
+
+
+def test_integrated_cancellation_closed_cut_and_external_mismatch(refund_provider):
+    import uuid
+    from backend.app.main import Stock
+    headers,turn,pid,intent,state,pay,sale=delivered_for_return(refund_provider)
+    assert client.post(f"/api/cash/{turn['id']}/close",headers=headers,json={'counted':'100'}).status_code==200
+    frozen=client.get(f"/api/cash/{turn['id']}/cut",headers=headers).json()['cut']
+    r=client.post(f"/api/sales/{sale['id']}/cancel",headers={**ADMIN,'Idempotency-Key':uuid.uuid4().hex},json={'reason':'Cancelar venta integrada'})
+    assert r.status_code==201,r.text
+    assert r.json()['status']=='completed' and r.json()['kind']=='cancellation'
+    assert Decimal(r.json()['total'])==Decimal(sale['total'])
+    assert client.get(f"/api/cash/{turn['id']}/cut",headers=headers).json()['cut']==frozen
+    assert client.get(f"/api/sales/{sale['id']}",headers=ADMIN).json()['status']=='cancelled'
+    with Session(engine) as db:assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==5
+
+
+def test_integrated_return_rejects_unaccounted_external_refund(refund_provider):
+    import uuid
+    from backend.app.main import Stock
+    _,_,pid,_,state,pay,sale=delivered_for_return(refund_provider)
+    pay['transaction_amount_refunded']='.01'
+    r=client.post(f"/api/sales/{sale['id']}/returns",headers={**ADMIN,'Idempotency-Key':uuid.uuid4().hex},json=integrated_return_data(sale))
+    assert r.status_code==409 and not state['refund_calls']
+    assert client.get(f"/api/sales/{sale['id']}/returns",headers=ADMIN).json()[0]['status']=='pending'
+    with Session(engine) as db:assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==2
+
+
+def test_integrated_return_does_not_treat_post_success_as_refund_confirmation(refund_provider,monkeypatch):
+    import uuid
+    from backend.app.main import Stock
+    _,_,pid,_,state,pay,sale=delivered_for_return(refund_provider)
+    base=mp.call
+    def delayed(method,path,payload=None,key=None):
+        if method=='POST' and path.endswith('/refunds'):
+            return {'id':'delayed-1','payment_id':str(pay['id']),'amount':payload['amount'],'status':'pending'}
+        return base(method,path,payload,key)
+    monkeypatch.setattr(mp,'call',delayed)
+    data=integrated_return_data(sale)
+    r=client.post(f"/api/sales/{sale['id']}/returns",headers={**ADMIN,'Idempotency-Key':uuid.uuid4().hex},json=data)
+    assert r.status_code==409
+    pending=client.get(f"/api/sales/{sale['id']}/returns",headers=ADMIN).json()[0]
+    with Session(engine) as db:assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==2
+    pay['transaction_amount_refunded']=pending['total']
+    r=client.post(f"/api/returns/{pending['id']}/retry",headers=ADMIN,json={})
+    assert r.status_code==200 and r.json()['status']=='completed'
+    with Session(engine) as db:assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==3

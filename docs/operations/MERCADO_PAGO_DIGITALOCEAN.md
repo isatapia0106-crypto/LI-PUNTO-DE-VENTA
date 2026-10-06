@@ -12,7 +12,7 @@ Los cobros reales están deshabilitados por defecto. No se han utilizado credenc
 
 Los checkouts nuevos reservan inventario y congelan el precio; el cajero confirma el pago e imprime el ticket. No se emite ticket automáticamente desde el webhook. Si cambia la autorización del cajero o existe una incidencia del pago, se conserva el registro para revisión. Si el turno original se cerró, el mismo cajero puede registrar la entrega en un nuevo turno abierto de la misma sucursal. No vuelvas a cobrar manualmente un checkout ya pagado. No crees otro checkout para un intento ambiguo; revisa el historial y la cuenta del proveedor.
 
-La creación de preferencias guarda el intento antes de llamar a la API. Ante timeout queda creating, sin regeneración automática, para evitar enlaces duplicados. Se requiere conciliación supervisada de estos casos. Los pagos adicionales al mismo checkout, contracargos y reembolsos externos se bloquean para revisión. Hay reembolsos idempotentes de incidencias sin entrega, iniciados por administración. Los reembolsos de tickets entregados y la recuperación completa de creación ambigua siguen pendientes de integración y validación antes de producción sin supervisión. El historial muestra los últimos 100 checkouts.
+La creación de preferencias guarda el intento antes de llamar a la API. Ante timeout queda creating, sin regeneración automática, para evitar enlaces duplicados. Se requiere conciliación supervisada de estos casos. Los pagos adicionales al mismo checkout, contracargos y reembolsos externos se bloquean para revisión. Hay reembolsos idempotentes de incidencias sin entrega, iniciados por administración. Las devoluciones de tickets entregados ahora solicitan reembolso integrado con partidas, inventario y reportes enlazados. La recuperación completa de creación ambigua y las pruebas reales del proveedor siguen pendientes antes de producción sin supervisión. El historial muestra los últimos 100 checkouts.
 
 La cuenta MP configurada pertenece a una empresa mediante MP_EMPRESA_ID. Para varias razones sociales hace falta configurar una cuenta por empresa; no se permite mezclar cuentas. No se admiten descuentos en esta primera ruta integrada. Se puede continuar con pagos manuales autorizados.
 
@@ -95,7 +95,7 @@ verificaciones anteriores. No hay tarea programada de liberación.
 posterior. Un webhook o conciliación de un pago no terminal tras liberar la reserva
 registra una incidencia durable. El checkout permanece cancelado y no puede emitir
 ticket, ni reclamar inventario ya liberado. Requiere revisión y reembolso desde el panel de incidencias por administración;
-no se reembolsa automáticamente desde el webhook ni se generan asientos de tickets entregados. Los estados aprobados o
+no se reembolsa automáticamente desde el webhook; los tickets entregados usan el flujo de Devoluciones. Los estados aprobados o
 las ventas entregadas no se cancelan por este flujo. Cerrar el turno antes de emitir
 el ticket de un pago aprobado permite entrega en un nuevo turno del mismo cajero,
 con las verificaciones que se describen abajo.
@@ -169,9 +169,10 @@ si se perdió la respuesta; el historial registra la confirmación por el pago.
 
 Después pulsa **Verificar y resolver incidencia**. No borra alertas por decisión
 manual: consulta todos los pagos conocidos y exige que cada excedente esté cancelado,
-rechazado o totalmente reembolsado. En una venta entregada, el pago principal debe
-seguir aprobado y sin reembolso. Un contracargo o reembolso de ese ticket exige
-conciliación de su devolución y no puede cerrarse desde este flujo. Una notificación
+rechazado o totalmente reembolsado. En una venta entregada, el pago principal debe estar aprobado o reembolsado.
+Un contracargo conserva la incidencia. Un reembolso de ese ticket sólo puede
+conciliarse si coincide exactamente con las devoluciones locales confirmadas y no
+hay devoluciones pendientes. Una notificación
 concurrente obliga a repetir la consulta. Los reembolsos inciertos que se observan
 completos quedan confirmados con auditoría.
 
@@ -185,3 +186,15 @@ El historial muestra Registrado, Por confirmar o Confirmado (estados internos pr
 No representan una garantía de abono bancario inmediato al comprador. No se ejecutaron
 reembolsos reales durante el desarrollo. Hay que validar rechazos, timeout y reintentos
 con Mercado Pago en una cuenta de pruebas antes de habilitar producción.
+
+## Devoluciones integradas de tickets entregados
+
+Consulta [Devoluciones](DEVOLUCIONES.md). Las partidas y el importe calculado en el
+ticket original se guardan antes del POST a Mercado Pago, con UUID persistente.
+La confirmación del proveedor precede al reintegro de stock, reportes y auditoría.
+Se admiten devoluciones parciales y cancelación completa, sin afectar efectivo ni
+cortes cerrados. El historial permite reintentar solicitudes pendientes. La revisión
+de incidencia del pago principal compara el saldo reembolsado del proveedor con
+la suma de devoluciones confirmadas; un contracargo o diferencia no se cierra por
+una decisión manual. Las notificaciones repetidas de un reembolso ya conciliado
+con sus devoluciones no vuelven a abrir esa misma alerta.
