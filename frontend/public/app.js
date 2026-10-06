@@ -132,7 +132,7 @@ async function refreshCash(){
   $('cashMovementForm').hidden=!cash.open||!manager;$('newRegister').hidden=!manager;
   const moves=cash.open&&(own||manager)?await request(`/api/cash/${cash.id}/movements`):[];
   $('cashMovements').replaceChildren(...moves.map(m=>{const row=node('div',undefined,'sale');row.append(node('span',`#${m.id} · ${m.kind==='deposit'?'Entrada':m.kind==='refund'?'Reembolso':'Retiro'} · ${pesos(m.amount)} · ${m.reason}`),button('Comprobante',()=>showText(`LI PUNTO DE VENTA\n${branches.find(b=>b.id===branchId()).name}\n${cash.register_name} · Turno #${m.session_id}\nMovimiento #${m.id}\n${fecha(m.created_at)}\n${m.kind==='deposit'?'Entrada':m.kind==='refund'?'Reembolso':'Retiro'}: ${pesos(m.amount)}\nMotivo: ${m.reason}\nAutorizado por usuario #${m.actor_id}`)));return row;}));
-  $('cashSessions').replaceChildren(...sessions.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.register_name} · Turno #${s.id} · ${s.cashier_name} · ${s.open?'Abierto':'Cerrado'} · Esperado ${pesos(s.expected)}${s.counted===null?'':` · Diferencia ${pesos(Number(s.counted)-Number(s.expected))}`}`),button('Ver corte',()=>showText(`LI PUNTO DE VENTA\nTurno #${s.id} · ${s.register_name}\nCajero: ${s.cashier_name}\nApertura: ${fecha(s.opened_at)}\n${s.closed_at?`Cierre: ${fecha(s.closed_at)}`:'Turno abierto'}\nFondo: ${pesos(s.opening)}\nEntradas: ${pesos(s.deposited)}\nRetiros: ${pesos(s.withdrawn)}\nReembolsos: ${pesos(s.refunded??0)}\nEsperado: ${pesos(s.expected)}\nContado: ${s.counted===null?'Pendiente':pesos(s.counted)}\nDiferencia: ${s.counted===null?'Pendiente':pesos(Number(s.counted)-Number(s.expected))}`)));return row;}));
+  $('cashSessions').replaceChildren(...sessions.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.register_name} · Turno #${s.id} · ${s.cashier_name} · ${s.open?'Abierto':'Cerrado'} · Esperado ${pesos(s.expected)}${s.counted===null?'':` · Diferencia ${pesos(Number(s.counted)-Number(s.expected))}`}`),button('Ver corte',()=>showCashCut(s.id)));return row;}));
 }
 function showText(text){receiptText=text;$('receiptContent').textContent=text;$('receiptDialog').showModal();}
 async function showReceipt(id){const s=await request(`/api/sales/${id}`);showText(['LI PUNTO DE VENTA',s.branch_name,`Ticket ${s.folio??s.id}`,`Turno #${s.cash_session_id}`,fecha(s.created_at),s.customer_name??'Público general','',
@@ -155,7 +155,7 @@ async function refresh(){if(!branchId())return;
   products=await request(`/api/products?branch_id=${branchId()}`);drawProducts();drawInventory();
   const jobs=[];
   if(can('cash_open')||can('report'))jobs.push(refreshCash());
-  if(can('sale')||can('report'))jobs.push((async()=>{const sales=await request(`/api/sales?branch_id=${branchId()}`);$('sales').replaceChildren(...sales.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.folio??'#'+s.id} · ${fecha(s.created_at)}`),node('b',pesos(s.total)),button('Ticket',()=>showReceipt(s.id)),button('Devoluciones',()=>openReturn(s.id)));return row;}));})());
+  if(can('sale')||can('report'))jobs.push((async()=>{const sales=await request(`/api/sales?branch_id=${branchId()}`);$('sales').replaceChildren(...sales.map(s=>{const row=node('div',undefined,'sale');row.append(node('span',`${s.folio??'#'+s.id} · ${fecha(s.created_at)}${s.status==='cancelled'?' · CANCELADA':''}`),node('b',pesos(s.total)),button('Ticket',()=>showReceipt(s.id)),button('Devoluciones',()=>openReturn(s.id)),...(can('sale_cancel')&&s.status!=='cancelled'?[button('Cancelar venta',()=>openReturn(s.id,true))]:[]));return row;}));})());
   if(can('report'))jobs.push((async()=>{const s=await request(`/api/reports/summary?branch_id=${branchId()}`);$('summary').textContent=`${s.sales_count} ventas · ${pesos(s.total)} neto de devoluciones · Efectivo ${pesos(s.by_method.cash)}`;})());else $('summary').textContent='Disponible para supervisión';
   if(can('purchase_read')||can('purchase_write'))jobs.push(refreshPurchases());
   if(can('stock_write'))jobs.push((async()=>{const rows=await request(`/api/stock/movements?branch_id=${branchId()}`);$('movements').replaceChildren(...rows.map(m=>node('div',`Producto #${m.product_id} · ${m.change>0?'+':''}${m.change} · ${m.reason} · Referencia ${m.reference_id??'—'} · Usuario #${m.actor_id??'—'} · ${fecha(m.created_at)}`,'sale')));})());
@@ -302,18 +302,20 @@ document.querySelectorAll('[data-reset-search]').forEach(button=>button.onclick=
 $('loginDialog').addEventListener('cancel',e=>e.preventDefault());$('loginDialog').showModal();
 
 
-let returnSale=null, savingReturn=false;
-async function openReturn(id){
+let returnSale=null, savingReturn=false, cancellationMode=false;
+async function openReturn(id,cancel=false){
  const sale=await request(`/api/sales/${id}`),history=await request(`/api/sales/${id}/returns`);
  if(!can('sale_return')){showText(['DEVOLUCIONES',`Ticket ${sale.folio??sale.id}`,...history.map(r=>`Devolución #${r.id} · ${fecha(r.created_at)} · ${pesos(r.total)} · ${r.reason}`),...(!history.length?['Sin devoluciones']:[])].join('\n'));return;}
- returnSale=sale;$('returnForm').reset();$('returnError').textContent='';
+ if(cancel&&history.length)throw Error('La venta tiene devoluciones. Devuelve las unidades pendientes.');
+ if(sale.status==='cancelled'){showText(['VENTA CANCELADA',`Ticket ${sale.folio??sale.id}`,...history.map(r=>`Registro #${r.id} · ${pesos(r.total)} · ${r.reason}`)].join('\n'));return;}
+ cancellationMode=cancel;returnSale=sale;$('returnTitle').textContent=cancel?'Cancelar venta completa':'Devolver productos';$('saveReturn').textContent=cancel?'Confirmar cancelación':'Confirmar devolución';$('returnForm').reset();$('returnError').textContent='';
  $('returnSaleInfo').textContent=`${sale.folio??'#'+sale.id} · Total original ${pesos(sale.total)} · ${history.length} devoluciones registradas`;
  $('returnHistory').replaceChildren(...history.map(r=>node('div',`Devolución #${r.id} · ${pesos(r.total)} · ${r.reason} · ${fecha(r.created_at)}`,'sale')));
  $('returnLines').replaceChildren(...sale.items.map(i=>{
   const remaining=i.quantity-i.returned_quantity,row=node('div',undefined,'return-line');
   const label=node('label',`${i.name} · Vendidos ${i.quantity} · Pendientes ${remaining}`),qty=node('input');
-  qty.type='number';qty.min='0';qty.max=String(remaining);qty.step='1';qty.value='0';qty.dataset.itemId=i.id;qty.disabled=!remaining||i.refundable_total===null;qty.addEventListener('input',updateReturnTotal);label.append(qty);
-  const restockLabel=node('label','Reintegrar al inventario','check'),restock=node('input');restock.type='checkbox';restock.checked=true;restock.dataset.restockId=i.id;restock.disabled=!remaining;restockLabel.prepend(restock);
+  qty.type='number';qty.min='0';qty.max=String(remaining);qty.step='1';qty.value=cancel?String(remaining):'0';qty.dataset.itemId=i.id;qty.disabled=cancel||!remaining||i.refundable_total===null;qty.addEventListener('input',updateReturnTotal);label.append(qty);
+  const restockLabel=node('label','Reintegrar al inventario','check'),restock=node('input');restock.type='checkbox';restock.checked=true;restock.dataset.restockId=i.id;restock.disabled=cancel||!remaining;restockLabel.prepend(restock);
   row.append(label,restockLabel);return row;
  }));
  const cash=sale.payment_method==='cash';$('returnCashLabel').hidden=!cash;$('returnReferenceLabel').hidden=cash;$('returnReference').required=!cash;
@@ -328,13 +330,13 @@ $('returnForm').onsubmit=async e=>{
  e.preventDefault();if(savingReturn||!returnSale)return;
  const sale=returnSale,items=[...$('returnLines').querySelectorAll('[data-item-id]')].filter(i=>Number(i.value)>0).map(i=>({sale_item_id:Number(i.dataset.itemId),quantity:Number(i.value),restock:$('returnLines').querySelector(`[data-restock-id="${i.dataset.itemId}"]`).checked}));
  if(!items.length){$('returnError').textContent='Selecciona al menos una unidad.';return;}
- if(!confirm('¿Confirmar la devolución y registrar el reembolso?'))return;
+ if(!confirm(cancellationMode?'¿Cancelar la venta completa, reintegrar productos y registrar el reembolso?':'¿Confirmar la devolución y registrar el reembolso?'))return;
  const data={reason:$('returnReason').value.trim(),items,cash_session_id:sale.payment_method==='cash'?Number($('returnCash').value):null,payment_reference:sale.payment_method==='cash'?null:$('returnReference').value.trim()};
  savingReturn=true;for(const el of $('returnForm').elements)el.disabled=true;$('returnError').textContent='';
- try{const r=await post(`/api/sales/${sale.id}/returns`,data,true);$('returnDialog').close();returnSale=null;
-  notice(`Devolución #${r.id} registrada por ${pesos(r.total)}`);
-  try{await refresh();}catch(error){notice('Devolución guardada. Actualiza la pantalla: '+error.message);}
-  showText(['LI PUNTO DE VENTA',`Devolución #${r.id}`,`Ticket original ${sale.folio??sale.id}`,fecha(r.created_at),`Motivo: ${r.reason}`,`Autorizó usuario #${r.actor_id}`,
+ try{const action=cancellationMode?'cancel':'returns',payload=cancellationMode?Object.fromEntries(Object.entries(data).filter(([k])=>k!=='items')):data;const r=await post(`/api/sales/${sale.id}/${action}`,payload,true);$('returnDialog').close();returnSale=null;
+  notice(`${r.kind==='cancellation'?'Cancelación':'Devolución'} #${r.id} registrada por ${pesos(r.total)}`);
+  try{await refresh();}catch(error){notice('Operación guardada. Actualiza la pantalla: '+error.message);}
+  showText(['LI PUNTO DE VENTA',`${r.kind==='cancellation'?'Cancelación':'Devolución'} #${r.id}`,`Ticket original ${sale.folio??sale.id}`,fecha(r.created_at),`Motivo: ${r.reason}`,`Autorizó usuario #${r.actor_id}`,
    ...r.items.map(i=>`${sale.items.find(x=>x.id===i.sale_item_id).name} · ${i.quantity} · ${pesos(i.total)} · ${i.restock?'Reintegrado':'Sin reintegro'}`),`Reembolso: ${pesos(r.total)}`,r.cash_session_id?`Efectivo · Turno #${r.cash_session_id}`:`Reembolso externo manual · ${r.payment_reference}`,'Comprobante interno sin CFDI'].join('\n'));
  }catch(error){$('returnError').textContent=error.message;}finally{savingReturn=false;for(const el of $('returnForm').elements)el.disabled=false;}
 };
@@ -348,4 +350,19 @@ function updateReturnTotal(){
   cents+=Math.round(original*(previous+qty)/item.quantity)-Math.round(original*previous/item.quantity);
  }
  $('returnTotal').textContent='Reembolso: '+pesos(cents/100);
+}
+
+async function showCashCut(id){
+ const session=await request(`/api/cash/${id}/cut`),c=session.cut;
+ const names={cash:'Efectivo',card:'Tarjeta (manual)',transfer:'Transferencia (manual)'};
+ showText(['LI PUNTO DE VENTA',session.open?'CORTE PROVISIONAL · TURNO ABIERTO':'CORTE DE CAJA',
+  `${session.register_name} · Turno #${id}`,`Cajero: ${session.cashier_name}`,`Apertura: ${fecha(session.opened_at)}`,
+  session.closed_at?`Cierre: ${fecha(session.closed_at)} · Usuario #${c.closed_by??'—'}`:'',
+  !session.open&&!c.snapshot?'Corte anterior sin snapshot de desglose. Esperado conservado al cierre.':'',
+  '',`Ventas: ${c.sales_count} · Importe bruto ${pesos(c.gross_sales)}`,
+  ...Object.entries(c.payments).map(([method,p])=>`${names[method]}: ${p.count} ventas · ${pesos(p.gross)} · Reembolsos de estos tickets ${pesos(p.ticket_refunds)}`),
+  '',`Fondo inicial: ${pesos(c.opening)}`,`Entradas: ${pesos(c.deposited)}`,`Retiros: ${pesos(c.withdrawn)}`,
+  `Reembolsos efectivos entregados por este turno: ${pesos(c.refunded)}`,`Efectivo esperado: ${pesos(c.expected)}`,
+  c.counted!==null?`Efectivo contado: ${pesos(c.counted)}`:'Pendiente de conteo',c.difference!==null?`Diferencia: ${pesos(c.difference)}`:'',
+  '', 'Tarjeta y transferencia no forman parte del efectivo esperado.','Los reembolsos de tickets y las salidas de efectivo muestran conceptos distintos; no se suman entre sí.'].join('\n'));
 }

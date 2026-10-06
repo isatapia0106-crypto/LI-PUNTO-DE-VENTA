@@ -70,6 +70,7 @@ class CashSession(Base):
     branch_id: Mapped[int] = mapped_column(ForeignKey('branches.id'))
     register_id: Mapped[int | None] = mapped_column(ForeignKey('cash_registers.id'), nullable=True)
     cashier_id: Mapped[int | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    close_snapshot: Mapped[str | None] = mapped_column(String(20000), nullable=True)
     expected_on_close: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     closed_by: Mapped[int | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     opening: Mapped[Decimal] = mapped_column(Numeric(12, 2))
@@ -195,6 +196,7 @@ class SaleItem(Base):
 
 class SaleReturn(Base):
     __tablename__ = 'sale_returns'
+    kind: Mapped[str] = mapped_column(String(20), default='return', server_default='return')
     id: Mapped[int] = mapped_column(primary_key=True)
     empresa_id: Mapped[int] = mapped_column(Integer, index=True)
     sale_id: Mapped[int] = mapped_column(ForeignKey('sales.id'))
@@ -385,8 +387,8 @@ if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(48)  # Transient local key; restarts invalidate sessions.
 
 ROLE_ACTIONS = {
-    'admin_general': {'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
-    'admin_sucursal': {'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
+    'admin_general': {'sale_cancel', 'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
+    'admin_sucursal': {'sale_cancel', 'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
     'cajero': {'sale', 'customer_read', 'customer_write', 'cash_open', 'cash_close'},
     'almacenista': {'stock_write', 'purchase_read', 'purchase_receive'},
     'supervisor_inventarios': {'stock_write', 'report', 'purchase_read', 'purchase_receive', 'count_write'},
@@ -486,6 +488,44 @@ def cash_totals(db, session):
     return {'expected': str(expected), 'withdrawn': str(money(withdrawn)), 'deposited': str(money(deposited)), 'cash_sales': len(sales), 'refunded': str(money(refunded))}
 
 
+def cash_cut(db, session):
+    if session.status == 'closed' and session.close_snapshot:
+        return json.loads(session.close_snapshot)
+    sales = db.scalars(select(Sale).where(Sale.cash_session_id == session.id)).all()
+    totals = cash_totals(db, session)
+    methods = {method: {'count': sum(s.payment_method == method for s in sales),
+        'gross': str(money(sum((s.total for s in sales if s.payment_method == method), Decimal('0'))))}
+        for method in ('cash', 'card', 'transfer')}
+    # External refunds concern tickets issued in this shift. Cash refunds concern
+    # money actually paid out by this shift, including tickets from earlier shifts.
+    returns = db.scalars(select(SaleReturn).where(SaleReturn.sale_id.in_([s.id for s in sales]))).all() if sales else []
+    if session.closed_at:
+        cutoff = session.closed_at.replace(tzinfo=None)
+        returns = [r for r in returns if r.created_at.replace(tzinfo=None) <= cutoff]
+    by_sale = {s.id: s for s in sales}
+    for method in ('cash', 'card', 'transfer'):
+        methods[method]['ticket_refunds'] = str(money(sum((r.total for r in returns if by_sale[r.sale_id].payment_method == method), Decimal('0'))))
+    expected = session.expected_on_close if session.status == 'closed' and session.expected_on_close is not None else Decimal(totals['expected'])
+    return {'session_id': session.id, 'sales_count': len(sales), 'payments': methods,
+            'gross_sales': str(money(sum((x.total for x in sales), Decimal('0')))),
+            'opening': str(session.opening), **totals, 'expected': str(money(expected)),
+            'counted': str(session.counted) if session.counted is not None else None,
+            'difference': str(money(session.counted - expected)) if session.counted is not None else None,
+            'closed_by': session.closed_by, 'closed_at': session.closed_at.isoformat() if session.closed_at else None,
+            'snapshot': False}
+
+
+@app.get('/api/cash/{session_id}/cut')
+def get_cash_cut(session_id: int, user: User = Depends(identity)):
+    require_any(user, 'cash_open', 'report')
+    with Session(engine) as db:
+        session = db.scalar(select(CashSession).where(CashSession.id == session_id, CashSession.empresa_id == user.empresa_id))
+        if session is None:
+            raise HTTPException(404, 'Turno no encontrado')
+        cash_access(db, user, session)
+        return {**cash_view(db, session), 'cut': cash_cut(db, session)}
+
+
 def cash_view(db, session):
     cashier = db.get(User, session.cashier_id) if session.cashier_id else None
     register = db.get(CashRegister, session.register_id) if session.register_id else None
@@ -495,7 +535,8 @@ def cash_view(db, session):
             'opening': str(session.opening), 'status': session.status, 'opened_at': session.opened_at.isoformat(),
             'closed_at': session.closed_at.isoformat() if session.closed_at else None,
             'counted': str(session.counted) if session.counted is not None else None,
-            **cash_totals(db, session)}
+            **cash_totals(db, session),
+            'expected': str(session.expected_on_close) if session.status == 'closed' and session.expected_on_close is not None else cash_totals(db, session)['expected']}
 
 @app.get('/api/cash/registers')
 def registers(branch_id: int, user: User = Depends(identity)):
@@ -645,6 +686,9 @@ def close_cash(session_id: int, data: CloseCash, user: User = Depends(identity))
         session.closed_by = user.id
         session.closed_at = datetime.now(timezone.utc)
         session.status = 'closed'
+        snapshot = cash_cut(db, session)
+        snapshot['snapshot'] = True
+        session.close_snapshot = json.dumps(snapshot)
         db.add(Audit(empresa_id=user.empresa_id, branch_id=session.branch_id, action='cash_closed', record_id=session.id, actor_id=user.id))
         result = {'id': session.id, 'expected': str(expected), 'counted': str(session.counted), 'difference': str(money(session.counted - expected))}
         db.commit()
@@ -1007,7 +1051,7 @@ def sales(branch_id: int, user: User = Depends(identity)):
     with Session(engine) as db:
         branch_for(db, user, branch_id)
         rows = db.scalars(select(Sale).where(Sale.empresa_id == empresa, Sale.branch_id == branch_id).order_by(Sale.id.desc()).limit(30)).all()
-        return [{'id': s.id, 'folio': s.folio, 'total': str(s.total), 'created_at': s.created_at.isoformat(), 'payment_method': s.payment_method} for s in rows]
+        return [{'id': s.id, 'folio': s.folio, 'status': 'cancelled' if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == s.id, SaleReturn.kind == 'cancellation')) else 'completed', 'total': str(s.total), 'created_at': s.created_at.isoformat(), 'payment_method': s.payment_method} for s in rows]
 
 @app.get('/api/sales/{sale_id}')
 def sale_detail(sale_id: int, user: User = Depends(identity)):
@@ -1022,6 +1066,7 @@ def sale_detail(sale_id: int, user: User = Depends(identity)):
             'folio': sale.folio, 'discount_total': str(sale.discount_total), 'discount_percent': str(sale.discount_percent),
             'discount_reason': sale.discount_reason, 'discount_approved_by': sale.discount_approved_by,
             'cash_session_id': sale.cash_session_id, 'actor_id': sale.actor_id,
+            'status': 'cancelled' if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id, SaleReturn.kind == 'cancellation')) else 'completed',
             'id': sale.id, 'branch_id': branch.id, 'branch_name': branch.name,
             'customer_id': sale.customer_id, 'customer_name': sale.customer_name or (customer.name if customer else None),
             'created_at': sale.created_at.isoformat(), 'payment_method': sale.payment_method,
@@ -1061,7 +1106,7 @@ def returned_quantities(db, sale_id):
 
 
 def return_view(record, replayed=False):
-    return {'id': record.id, 'sale_id': record.sale_id, 'total': str(record.total),
+    return {'id': record.id, 'kind': record.kind, 'sale_id': record.sale_id, 'total': str(record.total),
             'reason': record.reason, 'actor_id': record.actor_id, 'cash_session_id': record.cash_session_id,
             'payment_reference': record.payment_reference, 'created_at': record.created_at.isoformat(),
             'items': [{'sale_item_id': x.sale_item_id, 'quantity': x.quantity, 'restock': x.restock,
@@ -1096,11 +1141,15 @@ def sale_returns(sale_id: int, user: User = Depends(identity)):
 
 @app.post('/api/sales/{sale_id}/returns', status_code=201)
 def create_return(sale_id: int, data: ReturnIn, idempotency_key: str = Header(min_length=8, max_length=100), user: User = Depends(identity)):
-    require(user, 'sale_return')
+    return process_return(sale_id, data, idempotency_key, user)
+
+
+def process_return(sale_id, data, idempotency_key, user, cancellation=False):
+    require(user, 'sale_cancel' if cancellation else 'sale_return')
     ids = [x.sale_item_id for x in data.items]
     if len(ids) != len(set(ids)):
         raise HTTPException(422, 'Partidas duplicadas')
-    payload = json.dumps({'sale_id': sale_id, **data.model_dump(mode='json'),
+    payload = json.dumps({'sale_id': sale_id, 'kind': 'cancellation' if cancellation else 'return', **data.model_dump(mode='json'),
                           'items': sorted([x.model_dump() for x in data.items], key=lambda x: x['sale_item_id'])}, sort_keys=True)
     with Session(engine) as db:
         sale = db.scalar(select(Sale).where(Sale.id == sale_id, Sale.empresa_id == user.empresa_id))
@@ -1112,9 +1161,13 @@ def create_return(sale_id: int, data: ReturnIn, idempotency_key: str = Header(mi
         db.scalar(select(Branch).where(Branch.id == sale.branch_id).with_for_update())
         existing = db.scalar(select(SaleReturn).where(SaleReturn.empresa_id == user.empresa_id, SaleReturn.request_key == idempotency_key))
         if existing:
-            if existing.actor_id != user.id or existing.payload != payload:
+            if existing.actor_id != user.id or (json.loads(existing.payload) | {'kind': existing.kind}) != json.loads(payload):
                 raise HTTPException(409, 'Clave de devolución utilizada para otra operación')
             return return_view(existing, True)
+        if db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id, SaleReturn.kind == 'cancellation')):
+            raise HTTPException(409, 'La venta ya está cancelada')
+        if cancellation and db.scalar(select(SaleReturn.id).where(SaleReturn.sale_id == sale.id)):
+            raise HTTPException(409, 'La venta tiene devoluciones; completa la devolución de las unidades pendientes')
         cash = None
         if sale.payment_method == 'cash':
             cash = db.scalar(select(CashSession).where(CashSession.id == data.cash_session_id,
@@ -1142,7 +1195,7 @@ def create_return(sale_id: int, data: ReturnIn, idempotency_key: str = Header(mi
             lines.append(SaleReturnItem(sale_item_id=item.id, quantity=incoming.quantity, restock=incoming.restock, total=amount))
         if cash and Decimal(cash_totals(db, cash)['expected']) < total:
             raise HTTPException(409, 'Efectivo insuficiente en el turno para el reembolso')
-        record = SaleReturn(empresa_id=user.empresa_id, sale_id=sale.id, actor_id=user.id,
+        record = SaleReturn(kind='cancellation' if cancellation else 'return', empresa_id=user.empresa_id, sale_id=sale.id, actor_id=user.id,
             cash_session_id=cash.id if cash else None, reason=data.reason, payment_reference=data.payment_reference,
             payload=payload, total=total, request_key=idempotency_key, items=lines)
         db.add(record)
@@ -1158,15 +1211,33 @@ def create_return(sale_id: int, data: ReturnIn, idempotency_key: str = Header(mi
             stock.average_cost = ((stock.average_cost * stock.quantity + item.cost * incoming.quantity) / new_quantity).quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
             stock.quantity = new_quantity
             db.add(StockMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, product_id=item.product_id,
-                actor_id=user.id, change=incoming.quantity, reason='sale_return', reference_id=record.id))
+                actor_id=user.id, change=incoming.quantity, reason='sale_cancel' if cancellation else 'sale_return', reference_id=record.id))
         if cash:
             db.add(CashMovement(empresa_id=user.empresa_id, branch_id=sale.branch_id, session_id=cash.id,
                 actor_id=user.id, amount=total, kind='refund', reason=f'Devolución #{record.id}: {data.reason}'[:160]))
-        db.add(Audit(empresa_id=user.empresa_id, branch_id=sale.branch_id, actor_id=user.id, action='sale_return', record_id=record.id))
+        db.add(Audit(empresa_id=user.empresa_id, branch_id=sale.branch_id, actor_id=user.id, action='sale_cancel' if cancellation else 'sale_return', record_id=record.id))
         db.flush()
         result = return_view(record)
         db.commit()
         return result
+
+class CancelSaleIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    reason: str = Field(min_length=3, max_length=160)
+    cash_session_id: int | None = Field(default=None, gt=0)
+    payment_reference: str | None = Field(default=None, max_length=100)
+
+
+@app.post('/api/sales/{sale_id}/cancel', status_code=201)
+def cancel_sale(sale_id: int, data: CancelSaleIn, idempotency_key: str = Header(min_length=8, max_length=100), user: User = Depends(identity)):
+    require(user, 'sale_cancel')
+    with Session(engine) as db:
+        sale = db.scalar(select(Sale).where(Sale.id == sale_id, Sale.empresa_id == user.empresa_id))
+        if sale is None:
+            raise HTTPException(404, 'Venta no encontrada')
+        branch_for(db, user, sale.branch_id)
+        lines = [ReturnLine(sale_item_id=x.id, quantity=x.quantity, restock=True) for x in sale.items]
+    return process_return(sale_id, ReturnIn(**data.model_dump(), items=lines), idempotency_key, user, cancellation=True)
 
 @app.get('/api/reports/summary')
 def summary(branch_id: int, user: User = Depends(identity)):
@@ -1409,7 +1480,7 @@ if os.getenv('APP_ENV', 'demo') != 'production':
         raise RuntimeError('Base demo anterior: ejecuta python scripts/upgrade_demo_sqlite.py pos.db')
     if 'products' in inspect(engine).get_table_names() and 'barcode' not in {c['name'] for c in inspect(engine).get_columns('products')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
-    if 'products' in inspect(engine).get_table_names() and 'sale_returns' not in inspect(engine).get_table_names():
+    if 'products' in inspect(engine).get_table_names() and ('sale_returns' not in inspect(engine).get_table_names() or 'kind' not in {c['name'] for c in inspect(engine).get_columns('sale_returns')}):
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

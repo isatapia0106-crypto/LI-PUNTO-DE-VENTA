@@ -44,7 +44,9 @@ def migrate(path):
             if modern and not {'cash_registers', 'suppliers', 'purchases', 'purchase_items', 'purchase_receipts', 'inventory_counts'} <= names:
                 raise SystemExit('Base parcialmente migrada. No se modificó.')
             version = None
-            baseline = 'f2b3409ac871' if modern else 'e1a59c0d35f4'
+            baseline = 'a3d7e910c624' if {'sale_returns', 'sale_return_items'} <= names else 'f2b3409ac871' if modern else 'e1a59c0d35f4'
+            if baseline == 'a3d7e910c624' and 'kind' in {x[1] for x in db.execute('PRAGMA table_info(sale_returns)')} and 'close_snapshot' in {x[1] for x in db.execute('PRAGMA table_info(cash_sessions)')}:
+                baseline = 'b4e812c9a530'
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise SystemExit('La base tiene errores de integridad. No se modificó.')
         backup = path.with_name(path.name + '.backup-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))
