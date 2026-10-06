@@ -6,11 +6,11 @@ Primera integración de Checkout Pro mediante Preferences API, compatible con el
 
 El código genera checkouts, verifica firma HMAC de webhook, consulta el pago en la API oficial y valida cuenta receptora, empresa, MXN, importe y entorno. Sólo un pago approved puede emitir ticket integrado. Se vuelve a consultar el proveedor al confirmar. Redirecciones y datos enviados desde el navegador nunca autorizan un pago. El pago no aumenta efectivo del turno y aparece como mercado_pago en cortes y reportes.
 
-Los cobros reales están deshabilitados por defecto. No se han utilizado credenciales reales ni desplegado contenedores en DigitalOcean. La interfaz y PostgreSQL requieren pruebas de aceptación en el servidor. Las pruebas de proveedor usan respuestas simuladas, no transacciones reales.
+Los cobros reales están deshabilitados por defecto. No se han utilizado credenciales reales ni desplegado contenedores en DigitalOcean. La interfaz requiere pruebas de aceptación en los equipos y servidor reales. La validación automatizada en GitHub ya comprobó migraciones, pruebas financieras en PostgreSQL 16, restauración de respaldo y construcción de la imagen (ejecución 37545339986). Las pruebas de proveedor usan respuestas simuladas, no transacciones reales.
 
 ## Limitaciones antes de abrir cobros reales
 
-No hay reserva de inventario durante el checkout ni ticket automático desde webhook: el cajero confirma el pago e imprime el ticket. Si el stock, precio, autorización del cajero o turno cambia, el pago se conserva para revisión y no se emite una venta inconsistente. No vuelvas a cobrar manualmente un checkout ya pagado. No crees otro checkout para un intento ambiguo; revisa el historial y la cuenta del proveedor.
+Los checkouts nuevos reservan inventario y congelan el precio; el cajero confirma el pago e imprime el ticket. No se emite ticket automáticamente desde el webhook. Si cambia la autorización del cajero o existe una incidencia del pago, se conserva el registro para revisión. Si el turno original se cerró, el mismo cajero puede registrar la entrega en un nuevo turno abierto de la misma sucursal. No vuelvas a cobrar manualmente un checkout ya pagado. No crees otro checkout para un intento ambiguo; revisa el historial y la cuenta del proveedor.
 
 La creación de preferencias guarda el intento antes de llamar a la API. Ante timeout queda creating, sin regeneración automática, para evitar enlaces duplicados. Se requiere conciliación supervisada de estos casos. Los pagos adicionales al mismo checkout, contracargos y reembolsos externos se bloquean para revisión. No existe todavía automatización de reembolsos ni recuperación completa de creación ambigua; son pendientes antes de producción sin supervisión. El historial muestra los últimos 100 checkouts.
 
@@ -97,7 +97,8 @@ registra una incidencia durable. El checkout permanece cancelado y no puede emit
 ticket, ni reclamar inventario ya liberado. Requiere revisión y reembolso externo;
 no se ejecutan reembolsos remotos ni asientos automáticos. Los estados aprobados o
 las ventas entregadas no se cancelan por este flujo. Cerrar el turno antes de emitir
-el ticket de un pago aprobado sigue requiriendo intervención.
+el ticket de un pago aprobado permite entrega en un nuevo turno del mismo cajero,
+con las verificaciones que se describen abajo.
 
 La conducta de vencimiento de preferencias y cancelación de pagos debe verificarse
 con Mercado Pago en una prueba controlada. Las pruebas locales simulan respuestas
@@ -125,3 +126,24 @@ La migración de los datos locales de `pos.db` a PostgreSQL todavía requiere un
 copia autorizada de la base y validación de sus datos: no está automatizada aquí.
 El despliegue requiere IP, dominio y configuración privada en el servidor. Las
 pruebas de pagos reales requieren cuentas de prueba del proveedor y HTTPS accesible.
+
+## Pago aprobado con turno original cerrado
+
+1. Inicia sesión con el mismo cajero que generó el checkout y selecciona la misma sucursal.
+2. Abre un nuevo turno. En el cobro aprobado, selecciona **Confirmar pago y emitir ticket**.
+3. Confirma registrar la entrega en el turno actual. El servidor vuelve a consultar
+   el pago y exige que el turno original esté cerrado y que el turno destino sea
+   abierto, propio y de la misma sucursal.
+
+El payload conserva el turno original. El intento registra por separado el turno y
+fecha de entrega, y una auditoría referencia la venta. La emisión del ticket, salida
+de inventario y consumo de la reserva se confirman juntos. El corte anterior permanece
+idéntico. La venta Mercado Pago se incluye en el turno de entrega y no aumenta el
+efectivo esperado. Confirmaciones repetidas devuelven el mismo ticket incluso si
+luego se cierra el turno de entrega; no vuelven a descontar stock.
+
+Un pago pendiente, cancelado o con incidencia no puede usar este flujo. No se permite
+transferir la entrega a otro cajero o sucursal ni cambiar el turno original mientras
+permanece abierto. Las operaciones antiguas ya entregadas recuperan sus datos de turno
+a partir de su venta existente durante la migración. No se modifica la fecha ni el
+importe del pago del proveedor.

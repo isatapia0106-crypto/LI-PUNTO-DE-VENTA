@@ -138,7 +138,7 @@ async function refreshCash(){
 }
 function showText(text){receiptText=text;$('receiptContent').textContent=text;$('receiptDialog').showModal();}
 async function showReceipt(id){const s=await request(`/api/sales/${id}`);showText(['LI PUNTO DE VENTA',s.branch_name,`Ticket ${s.folio??s.id}`,`Turno #${s.cash_session_id}`,fecha(s.created_at),s.customer_name??'Público general','',
- ...s.items.map(i=>`${i.quantity} ${i.unit} · ${i.name}\n  Base ${pesos(i.line_total)}${i.tax!==null?` · Impuesto ${pesos(i.tax)}`:''}`),'',`Descuento aplicado: ${pesos(s.discount_total)}`,`Subtotal después del descuento: ${pesos(s.subtotal)}`,`Impuestos: ${pesos(s.tax)}`,`Total: ${pesos(s.total)}`,`Pago: ${{cash:'Efectivo',card:'Tarjeta',transfer:'Transferencia'}[s.payment_method]}`,`Recibido: ${pesos(s.paid)}`,`Cambio: ${pesos(s.change)}`,'','Comprobante de venta. No es factura CFDI.'].join('\n'));}
+ ...s.items.map(i=>`${i.quantity} ${i.unit} · ${i.name}\n  Base ${pesos(i.line_total)}${i.tax!==null?` · Impuesto ${pesos(i.tax)}`:''}`),'',`Descuento aplicado: ${pesos(s.discount_total)}`,`Subtotal después del descuento: ${pesos(s.subtotal)}`,`Impuestos: ${pesos(s.tax)}`,`Total: ${pesos(s.total)}`,`Pago: ${{cash:'Efectivo',card:'Tarjeta',transfer:'Transferencia',mercado_pago:'Mercado Pago'}[s.payment_method]}`,`Recibido: ${pesos(s.paid)}`,`Cambio: ${pesos(s.change)}`,'','Comprobante de venta. No es factura CFDI.'].join('\n'));}
 function drawPurchaseDraft(){ $('purchaseDraft').replaceChildren(...[...purchaseDraft].map(([id,x])=>{const row=node('div',undefined,'sale');row.append(node('span',`${catalog.find(p=>p.id===id)?.name} · ${x.quantity} × ${pesos(x.unit_cost)}`),button('Quitar',()=>{purchaseDraft.delete(id);drawPurchaseDraft();}));return row;})); }
 async function refreshPurchases(){
   const suppliers=await request(`/api/suppliers?branch_id=${branchId()}`);options('supplier',suppliers,s=>s.name);
@@ -415,11 +415,16 @@ async function loadIntegratedPayments(){
  const rows=await request(`/api/payments?branch_id=${branchId()}`);
  $('mpPayments').replaceChildren(...rows.map(p=>{const row=node('div',undefined,'sale');row.append(node('span',`Mercado Pago · ${pesos(p.amount)} · ${p.status} · ${fecha(p.created_at)}`));
  if(p.checkout_url&&['creating','pending','in_process','rejected'].includes(p.status)){const link=node('a','Abrir Checkout');link.href=p.checkout_url;link.target='_blank';link.rel='noopener noreferrer';row.append(link);}
- if(p.actor_id===me.id&&!p.review_reason&&p.payment_id&&['approved','completed'].includes(p.status))row.append(button(p.status==='completed'?'Ver ticket confirmado':'Confirmar pago y emitir ticket',async()=>{const sale=await post(`/api/payments/${p.id}/confirm`,{});await refresh();await showReceipt(sale.id);}));
+ if(p.actor_id===me.id&&!p.review_reason&&p.payment_id&&['approved','completed'].includes(p.status))row.append(button(p.status==='completed'?'Ver ticket confirmado':'Confirmar pago y emitir ticket',async()=>{let confirmation={};if(p.status!=='completed'){
+ if(!myCash.open)throw Error('Abre tu turno para emitir el ticket del pago aprobado.');
+ if(myCash.id!==p.original_cash_session_id&&!confirm(`El turno original ${p.original_cash_session_id} debe estar cerrado. ¿Registrar la entrega en tu turno actual ${myCash.id}?`))return;
+ confirmation={cash_session_id:myCash.id};
+ }const sale=await post(`/api/payments/${p.id}/confirm`,confirmation);await refresh();await showReceipt(sale.id);}));
  row.append(button('Consultar proveedor',async()=>{await post(`/api/payments/${p.id}/reconcile`,{});await refresh();notice('Consulta del proveedor terminada.');}));
  if(!p.cancelled_at&&!p.review_reason&&!['approved','completed'].includes(p.status)&&(p.actor_id===me.id||['admin_general','admin_sucursal'].includes(me.role)))row.append(button(p.cancellation_pending?'Reintentar cancelación':'Cancelar checkout',async()=>{checkoutCancelId=p.id;$('checkoutCancelReason').value='';$('checkoutCancelError').textContent='';$('checkoutCancelDialog').showModal();}));
  if(p.cancelled_at)row.append(node('small','Checkout cancelado · reserva liberada'));
  if(p.cancellation_pending)row.append(node('small','Cancelación pendiente · reserva conservada'));
+ if(p.delivery_cash_session_id)row.append(node('small',`Turno original ${p.original_cash_session_id} · Entrega en turno ${p.delivery_cash_session_id}`));
  if(p.reserved)row.append(node('small','Inventario reservado'));
  if(p.review_reason)row.append(node('strong',`Requiere revisión: ${p.review_reason}`));
  return row;}));

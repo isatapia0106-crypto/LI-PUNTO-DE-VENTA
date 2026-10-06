@@ -166,6 +166,8 @@ class PaymentIntent(Base):
     payload: Mapped[str] = mapped_column(String(20000))
     amount: Mapped[Decimal] = mapped_column(Numeric(12,2))
     status: Mapped[str] = mapped_column(String(40), default='creating')
+    delivery_cash_session_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -715,7 +717,13 @@ def cash_movements(session_id: int, user: User = Depends(identity)):
 def close_cash(session_id: int, data: CloseCash, user: User = Depends(identity)):
     require(user, 'cash_close')
     with Session(engine) as db:
-        session = db.scalar(select(CashSession).where(CashSession.id == session_id, CashSession.empresa_id == user.empresa_id, CashSession.status == 'open').with_for_update())
+        candidate = db.scalar(select(CashSession).where(CashSession.id == session_id,
+            CashSession.empresa_id == user.empresa_id))
+        if candidate is None:
+            raise HTTPException(404, 'Turno abierto no encontrado')
+        cash_access(db, user, candidate)
+        db.scalar(select(Branch).where(Branch.id == candidate.branch_id).with_for_update())
+        session = db.scalar(select(CashSession).where(CashSession.id == session_id, CashSession.empresa_id == user.empresa_id, CashSession.status == 'open').with_for_update().execution_options(populate_existing=True))
         if session is None:
             raise HTTPException(404, 'Turno abierto no encontrado')
         cash_access(db, user, session)
@@ -1042,6 +1050,15 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
                 raise HTTPException(409, 'El pago integrado no está confirmado')
             original = json.loads(intent.payload)
             comparable = data.model_dump(mode='json', exclude={'approval','payment_intent_id'})
+            if comparable.get('cash_session_id') != original.get('cash_session_id'):
+                previous_cash = db.scalar(select(CashSession).where(
+                    CashSession.id == original.get('cash_session_id'),
+                    CashSession.empresa_id == user.empresa_id,
+                    CashSession.branch_id == intent.branch_id,
+                    CashSession.cashier_id == user.id))
+                if previous_cash is None or previous_cash.status != 'closed':
+                    raise HTTPException(409, 'Solo puedes cambiar el turno de entrega cuando el turno original ya está cerrado')
+                comparable['cash_session_id'] = original.get('cash_session_id')
             if comparable != original:
                 raise HTTPException(409, 'El carrito no coincide con el pago integrado')
         elif data.payment_intent_id:
@@ -1110,6 +1127,11 @@ def sell(data: SaleIn, idempotency_key: str = Header(min_length=8, max_length=10
             if intent:
                 intent.status = 'completed'
                 intent.reservation_active = False
+                intent.delivery_cash_session_id = cash.id
+                intent.delivered_at = datetime.now(timezone.utc)
+                if cash.id != json.loads(intent.payload).get('cash_session_id'):
+                    db.add(Audit(empresa_id=user.empresa_id, branch_id=data.branch_id,
+                        action='payment_delivered_new_shift', record_id=sale.id, actor_id=user.id))
             result = sale_result(sale)
             db.commit()
             return result
@@ -1743,6 +1765,9 @@ def intent_view(intent):
             'checkout_url': None if intent.cancel_requested_at else intent.checkout_url, 'payment_id': intent.payment_id,
             'cancellation_pending': bool(intent.cancel_requested_at and not intent.cancelled_at),
             'cancelled_at': intent.cancelled_at.isoformat() if intent.cancelled_at else None,
+            'original_cash_session_id': json.loads(intent.payload).get('cash_session_id'),
+            'delivery_cash_session_id': intent.delivery_cash_session_id,
+            'delivered_at': intent.delivered_at.isoformat() if intent.delivered_at else None,
             'created_at': intent.created_at.isoformat(), 'reserved': intent.reservation_active,
             'review_reason': intent.review_reason}
 
@@ -2013,14 +2038,26 @@ def cancel_payment_checkout(intent_id: str, data: CancelCheckoutIn, user: User =
         return intent_view(current)
 
 
+class ConfirmPaymentIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    cash_session_id: int | None = Field(default=None, gt=0)
+
+
 @app.post('/api/payments/{intent_id}/confirm')
-def confirm_integrated_sale(intent_id:str,user:User=Depends(identity)):
+def confirm_integrated_sale(intent_id: str, data: ConfirmPaymentIn, user: User = Depends(identity)):
     require(user,'sale')
     with Session(engine) as db:
         intent=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent_id,PaymentIntent.empresa_id==user.empresa_id,PaymentIntent.actor_id==user.id))
         if intent is None:raise HTTPException(404,'Cobro no encontrado para este cajero')
         branch_for(db,user,intent.branch_id)
         payment_id=intent.payment_id;payload=json.loads(intent.payload)
+        delivered = db.scalar(select(Sale).where(Sale.empresa_id == user.empresa_id,
+            Sale.request_key == 'mp-sale-'+intent_id))
+        if delivered:
+            # A replay always uses the recorded delivery shift, even after closing it.
+            payload['cash_session_id'] = delivered.cash_session_id
+        elif data.cash_session_id is not None:
+            payload['cash_session_id'] = data.cash_session_id
         if not payment_id:raise HTTPException(409,'Esperando notificación de Mercado Pago')
     updated=apply_provider_payment(mp.call('GET','/v1/payments/'+payment_id))
     if updated.get('review_reason') or updated['status'] not in ('approved','completed'):raise HTTPException(409,'El proveedor no confirma pago aprobado')
@@ -2040,6 +2077,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
     if 'payment_intents' in inspect(engine).get_table_names() and 'reservation_active' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'payment_intents' in inspect(engine).get_table_names() and 'cancel_requested_at' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'payment_intents' in inspect(engine).get_table_names() and 'delivery_cash_session_id' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

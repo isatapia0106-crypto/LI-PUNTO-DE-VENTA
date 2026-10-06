@@ -221,3 +221,56 @@ def test_cancel_recovers_preference_after_lost_creation_response(cancellation_pr
     r=cancel(intent,headers);assert r.status_code==200,r.text
     assert not r.json()['reserved']
     with Session(engine) as db:assert db.get(PaymentIntent,intent['id']).preference_id=='pref-1'
+
+
+def test_approved_payment_delivery_after_closed_shift_preserves_cut_and_replay(provider):
+    from backend.app.main import Stock, Audit
+    headers,old,pid,intent,_=setup_intent()
+    assert client.post(f"/api/cash/{old['id']}/close",headers=headers,json={'counted':'100'}).status_code==200
+    frozen=client.get(f"/api/cash/{old['id']}/cut",headers=headers).json()['cut']
+    pay=payment(intent);provider[str(pay['id'])]=pay;assert notify(pay).status_code==200
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==409
+    new=opened(headers)
+    r=client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={'cash_session_id':new['id']})
+    assert r.status_code==200,r.text
+    sale=r.json()
+    assert client.get(f"/api/cash/{old['id']}/cut",headers=headers).json()['cut']==frozen
+    current=client.get(f"/api/cash/{new['id']}/cut",headers=headers).json()['cut']
+    assert current['payments']['mercado_pago']['gross']==intent['amount']
+    assert current['expected']=='100.00' and current['sales_count']==1
+    with Session(engine) as db:
+        stored=db.get(PaymentIntent,intent['id'])
+        assert json.loads(stored.payload)['cash_session_id']==old['id']
+        assert stored.delivery_cash_session_id==new['id'] and stored.delivered_at
+        assert not stored.reservation_active
+        assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==9
+        assert db.scalar(select(Audit).where(Audit.action=='payment_delivered_new_shift',Audit.record_id==sale['id']))
+    assert client.post(f"/api/cash/{new['id']}/close",headers=headers,json={'counted':'100'}).status_code==200
+    # Even a retry with the original shift returns the existing ticket.
+    repeated=client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={'cash_session_id':old['id']})
+    assert repeated.status_code==200 and repeated.json()['id']==sale['id'] and repeated.json()['replayed']
+    with Session(engine) as db:assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==9
+
+
+def test_delivery_rejects_other_cashier_branch_and_closed_destination(provider):
+    from backend.app.main import CashSession, CashRegister
+    headers,old,_,intent,_=setup_intent();pay=payment(intent);provider[str(pay['id'])]=pay;notify(pay)
+    other,_=actor();other_turn=opened(other)
+    # Original open shift must not be rerouted, even to another open register.
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={'cash_session_id':other_turn['id']}).status_code==409
+    client.post(f"/api/cash/{old['id']}/close",headers=headers,json={'counted':'100'})
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={'cash_session_id':other_turn['id']}).status_code==403
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=other,json={'cash_session_id':other_turn['id']}).status_code==404
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={'cash_session_id':old['id']}).status_code==409
+    # A shift in a different branch is never eligible, even for the same cashier.
+    with Session(engine) as db:
+        uid=db.get(PaymentIntent,intent['id']).actor_id
+        register=db.scalar(select(CashRegister).where(CashRegister.branch_id==1))
+        foreign=CashSession(empresa_id=1,branch_id=1,cashier_id=uid,register_id=register.id,opening=Decimal('100'))
+        db.add(foreign);db.commit();foreign_id=foreign.id
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={'cash_session_id':foreign_id}).status_code==409
+    with Session(engine) as db:
+        db.get(CashSession,foreign_id).status='closed';db.commit()
+    with Session(engine) as db:
+        stored=db.get(PaymentIntent,intent['id'])
+        assert stored.reservation_active and stored.delivery_cash_session_id is None

@@ -47,3 +47,13 @@ jobs:
           python scripts/verify_postgres_restore.py --restored-url postgresql+psycopg://pos:ci-only-password@localhost:5432/pos_restore_check
       - name: Validate production image build
         run: docker build -f infrastructure/Dockerfile.production -t li-pos-validation .
+  sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r backend/requirements.txt pytest
+      - name: Local database migrations, financial regressions and backup recovery
+        run: python -m pytest tests/test_integrated_payments.py tests/test_backups.py tests/test_high_priority.py tests/test_cancel_cut.py tests/test_returns.py tests/test_operations.py tests/test_sales.py tests/test_operations_migration.py -q
