@@ -29,5 +29,15 @@
 <div class="actions"><button type="button" id="checkoutCancelBack">Volver</button><button type="submit" id="checkoutCancelSubmit">Cancelar y liberar reserva</button></div>
 </form>
 </dialog>
+<dialog id="paymentIncidentDialog" aria-labelledby="paymentIncidentTitle">
+<h2 id="paymentIncidentTitle">Conciliar pagos</h2><p id="paymentIncidentSummary"></p>
+<p>Un reembolso de incidencia devuelve dinero al comprador. Los tickets entregados se gestionan desde Devoluciones.</p>
+<div id="paymentIncidentPayments"></div><div id="paymentIncidentRefunds"></div>
+<form id="paymentRefundForm" hidden><p id="paymentRefundSelection"></p>
+<label>Motivo<input id="paymentRefundReason" required minlength="3" maxlength="300"></label>
+<button id="paymentRefundSubmit" type="submit">Confirmar reembolso del importe restante</button></form>
+<p id="paymentIncidentError" role="alert"></p>
+<menu><button id="paymentIncidentClose" type="button">Cerrar</button><button id="paymentIncidentResolve" type="button">Verificar y resolver incidencia</button></menu>
+</dialog>
 </body></html>
 

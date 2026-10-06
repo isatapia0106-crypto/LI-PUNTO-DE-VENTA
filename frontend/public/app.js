@@ -413,19 +413,21 @@ $('mpCheckout').onclick=run(async()=>{
 });
 async function loadIntegratedPayments(){
  const rows=await request(`/api/payments?branch_id=${branchId()}`);
- $('mpPayments').replaceChildren(...rows.map(p=>{const row=node('div',undefined,'sale');row.append(node('span',`Mercado Pago · ${pesos(p.amount)} · ${p.status} · ${fecha(p.created_at)}`));
+ $('mpPayments').replaceChildren(...rows.map(p=>{const row=node('div',undefined,'sale');row.append(node('span',`Mercado Pago · ${pesos(p.amount)} · ${paymentStatusLabel(p.status)} · ${fecha(p.created_at)}`));
  if(p.checkout_url&&['creating','pending','in_process','rejected'].includes(p.status)){const link=node('a','Abrir Checkout');link.href=p.checkout_url;link.target='_blank';link.rel='noopener noreferrer';row.append(link);}
  if(p.actor_id===me.id&&!p.review_reason&&p.payment_id&&['approved','completed'].includes(p.status))row.append(button(p.status==='completed'?'Ver ticket confirmado':'Confirmar pago y emitir ticket',async()=>{let confirmation={};if(p.status!=='completed'){
  if(!myCash.open)throw Error('Abre tu turno para emitir el ticket del pago aprobado.');
  if(myCash.id!==p.original_cash_session_id&&!confirm(`El turno original ${p.original_cash_session_id} debe estar cerrado. ¿Registrar la entrega en tu turno actual ${myCash.id}?`))return;
  confirmation={cash_session_id:myCash.id};
  }const sale=await post(`/api/payments/${p.id}/confirm`,confirmation);await refresh();await showReceipt(sale.id);}));
+ row.append(button('Ver pagos e incidencias',async()=>{await openPaymentIncident(p.id);}));
  row.append(button('Consultar proveedor',async()=>{await post(`/api/payments/${p.id}/reconcile`,{});await refresh();notice('Consulta del proveedor terminada.');}));
  if(!p.cancelled_at&&!p.review_reason&&!['approved','completed'].includes(p.status)&&(p.actor_id===me.id||['admin_general','admin_sucursal'].includes(me.role)))row.append(button(p.cancellation_pending?'Reintentar cancelación':'Cancelar checkout',async()=>{checkoutCancelId=p.id;$('checkoutCancelReason').value='';$('checkoutCancelError').textContent='';$('checkoutCancelDialog').showModal();}));
  if(p.cancelled_at)row.append(node('small','Checkout cancelado · reserva liberada'));
  if(p.cancellation_pending)row.append(node('small','Cancelación pendiente · reserva conservada'));
  if(p.delivery_cash_session_id)row.append(node('small',`Turno original ${p.original_cash_session_id} · Entrega en turno ${p.delivery_cash_session_id}`));
  if(p.reserved)row.append(node('small','Inventario reservado'));
+ if(p.resolved_at)row.append(node('small',`Última conciliación ${fecha(p.resolved_at)} · Usuario #${p.resolved_by}`));
  if(p.review_reason)row.append(node('strong',`Requiere revisión: ${p.review_reason}`));
  return row;}));
 }
@@ -439,3 +441,34 @@ $('checkoutCancelForm').onsubmit=async e=>{
  catch(err){$('checkoutCancelError').textContent=err.message;await refresh().catch(()=>{});}
  finally{checkoutCancelling=false;$('checkoutCancelSubmit').disabled=false;}
 };
+
+let paymentIncidentId=null, selectedRefundPayment=null, paymentIncidentBusy=false;
+async function openPaymentIncident(id){
+ const details=await request(`/api/payments/${id}/details`);paymentIncidentId=id;selectedRefundPayment=null;
+ $('paymentIncidentSummary').textContent=`Checkout ${id} · ${pesos(details.intent.amount)} · ${paymentStatusLabel(details.intent.status)}`;
+ $('paymentIncidentError').textContent='';$('paymentRefundForm').hidden=true;
+ $('paymentIncidentResolve').hidden=!can('sale_return');
+ $('paymentIncidentPayments').replaceChildren(...details.payments.map(p=>{const row=node('div',undefined,'sale');row.append(node('span',`Pago ${p.id} · ${paymentStatusLabel(p.status)} · ${pesos(p.amount)} · Devuelto ${pesos(p.refunded)}`));
+ if(p.refundable)row.append(button('Reembolsar restante',()=>{selectedRefundPayment=p.id;$('paymentRefundSelection').textContent=`Pago ${p.id} · Importe restante ${pesos(Number(p.amount)-Number(p.refunded))}`;$('paymentRefundReason').value='';$('paymentRefundForm').hidden=false;$('paymentRefundReason').focus();}));return row;}));
+ $('paymentIncidentRefunds').replaceChildren(...details.refunds.map(r=>{const row=node('div',undefined,'sale');row.append(node('span',`Reembolso #${r.id} · Pago ${r.payment_id} · ${pesos(r.amount)} · ${paymentStatusLabel(r.status)} · ${r.reason}`));
+ if(r.status!=='confirmed'&&can('sale_return'))row.append(button('Verificar o reintentar',()=>{selectedRefundPayment=r.payment_id;$('paymentRefundSelection').textContent=`Verificar reembolso #${r.id} · ${pesos(r.amount)}`;$('paymentRefundReason').value=r.reason;$('paymentRefundForm').hidden=false;}));return row;}));
+ if(!$('paymentIncidentDialog').open)$('paymentIncidentDialog').showModal();
+}
+$('paymentIncidentClose').onclick=()=>{if(!paymentIncidentBusy)$('paymentIncidentDialog').close();};
+$('paymentIncidentDialog').addEventListener('cancel',e=>{if(paymentIncidentBusy)e.preventDefault();});
+$('paymentRefundForm').onsubmit=async e=>{
+ e.preventDefault();if(paymentIncidentBusy||!selectedRefundPayment)return;
+ if(!confirm('¿Enviar o verificar el reembolso de este pago con Mercado Pago?'))return;
+ paymentIncidentBusy=true;$('paymentRefundSubmit').disabled=true;
+ try{const result=await post(`/api/payments/${paymentIncidentId}/refund`,{payment_id:selectedRefundPayment,reason:$('paymentRefundReason').value.trim()});await refresh();await openPaymentIncident(paymentIncidentId);notice(result.status==='confirmed'?'Reembolso confirmado. Verifica y resuelve la incidencia.':'Reembolso pendiente de confirmación. Conserva la operación y vuelve a consultar.');}
+ catch(err){$('paymentIncidentError').textContent=err.message;await refresh().catch(()=>{});}
+ finally{paymentIncidentBusy=false;$('paymentRefundSubmit').disabled=false;}
+};
+$('paymentIncidentResolve').onclick=run(async()=>{
+ if(paymentIncidentBusy)return;paymentIncidentBusy=true;$('paymentIncidentResolve').disabled=true;
+ try{await post(`/api/payments/${paymentIncidentId}/resolve`,{});await refresh();await openPaymentIncident(paymentIncidentId);notice('Incidencia verificada. Si el checkout quedó sin venta, cancélalo para cerrar el enlace y liberar su reserva.');}
+ catch(err){$('paymentIncidentError').textContent=err.message;}
+ finally{paymentIncidentBusy=false;$('paymentIncidentResolve').disabled=false;}
+});
+
+function paymentStatusLabel(status){return {creating:'Creando cobro',pending:'Pendiente',in_process:'En proceso',authorized:'Autorizado',approved:'Aprobado',completed:'Ticket emitido',refunded:'Reembolsado',charged_back:'Contracargo',cancelled:'Cancelado',rejected:'Rechazado',cancel_pending:'Cancelación pendiente',prepared:'Registrado',uncertain:'Por confirmar',confirmed:'Confirmado'}[status]??status;}

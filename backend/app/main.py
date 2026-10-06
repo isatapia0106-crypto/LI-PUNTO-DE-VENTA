@@ -174,6 +174,8 @@ class PaymentIntent(Base):
     cancel_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     reservation_active: Mapped[bool] = mapped_column(default=False, server_default='0')
     price_snapshot: Mapped[str | None] = mapped_column(String(20000), nullable=True)
+    resolved_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     review_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     preference_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     checkout_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -181,6 +183,53 @@ class PaymentIntent(Base):
     request_key: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     __table_args__ = (UniqueConstraint('empresa_id', 'request_key'),)
+
+class PaymentObservation(Base):
+    __tablename__ = 'payment_observations'
+    payment_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer, index=True)
+    intent_id: Mapped[str] = mapped_column(ForeignKey('payment_intents.id'))
+    status: Mapped[str] = mapped_column(String(40))
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    refunded: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+def record_payment_observation(db, intent, payment):
+    pid=str(payment['id'])
+    record=db.get(PaymentObservation,pid)
+    if record and (record.empresa_id!=intent.empresa_id or record.intent_id!=intent.id):
+        raise HTTPException(409,'Pago ya observado en otra operación')
+    if record is None:
+        record=PaymentObservation(payment_id=pid,empresa_id=intent.empresa_id,intent_id=intent.id)
+        db.add(record)
+    record.status=str(payment.get('status','unknown'))[:40]
+    record.amount=Decimal(str(payment['transaction_amount']))
+    record.refunded=Decimal(str(payment.get('transaction_amount_refunded',0)))
+    record.updated_at=datetime.now(timezone.utc)
+
+
+class PaymentRefund(Base):
+    __tablename__ = 'payment_refunds'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer, index=True)
+    intent_id: Mapped[str] = mapped_column(ForeignKey('payment_intents.id'))
+    payment_id: Mapped[str] = mapped_column(String(100), unique=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    provider_key: Mapped[str] = mapped_column(String(60), unique=True)
+    provider_refund_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default='prepared')
+    reason: Mapped[str] = mapped_column(String(300))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+def fully_refunded(payment):
+    total = Decimal(str(payment.get('transaction_amount', 0)))
+    return (payment.get('status') in ('approved','refunded') and total > 0
+        and Decimal(str(payment.get('transaction_amount_refunded', 0))) == total)
+
 
 def reserved_quantity(db, branch_id, product_id, exclude=None):
     """Called under the branch lock for every inventory reduction."""
@@ -1769,7 +1818,8 @@ def intent_view(intent):
             'delivery_cash_session_id': intent.delivery_cash_session_id,
             'delivered_at': intent.delivered_at.isoformat() if intent.delivered_at else None,
             'created_at': intent.created_at.isoformat(), 'reserved': intent.reservation_active,
-            'review_reason': intent.review_reason}
+            'review_reason': intent.review_reason, 'resolved_by':intent.resolved_by,
+            'resolved_at':intent.resolved_at.isoformat() if intent.resolved_at else None}
 
 
 @app.post('/api/payments/checkout', status_code=201)
@@ -1840,14 +1890,18 @@ def apply_provider_payment(payment):
         db.scalar(select(Branch).where(Branch.id==intent.branch_id).with_for_update())
         intent=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent.id).with_for_update().execution_options(populate_existing=True))
         pid=str(payment['id'])
+        record_payment_observation(db,intent,payment)
         if intent.cancel_requested_at:
             if not intent.payment_id:
                 intent.payment_id = pid
-            if payment.get('status') not in ('cancelled', 'rejected') and (intent.cancelled_at or payment.get('status') not in ('pending','in_process','authorized')):
+            if not fully_refunded(payment) and payment.get('status') not in ('cancelled', 'rejected') and (intent.cancelled_at or payment.get('status') not in ('pending','in_process','authorized')):
                 intent.review_reason = 'Pago durante o después de cancelación: '+pid[:100]+' · '+str(payment.get('status'))[:40]
             db.commit()
             return intent_view(intent)
         if intent.payment_id and intent.payment_id!=pid:
+            if fully_refunded(payment) or payment.get('status') in ('cancelled','rejected'):
+                db.commit()
+                return intent_view(intent)
             intent.review_reason='Otro pago detectado: '+pid[:100]
             db.commit()
             raise HTTPException(409,'Hay otro pago para este checkout; requiere conciliación')
@@ -1856,6 +1910,7 @@ def apply_provider_payment(payment):
                 intent.review_reason='Pago entregado: estado '+str(payment.get('status'))+'; reembolso '+str(payment.get('transaction_amount_refunded',0))
                 db.commit()
                 return intent_view(intent)
+            db.commit()
             return intent_view(intent)
         intent.payment_id=pid;intent.status='refunded' if Decimal(str(payment.get('transaction_amount_refunded',0)))>0 else str(payment.get('status','pending'))[:40]
         if intent.status in ('refunded', 'charged_back'):
@@ -1945,6 +2000,9 @@ def verified_payment_ids(intent_id, known_id):
         ids.add(str(row['id']))
     if known_id:
         ids.add(known_id)
+    with Session(engine) as db:
+        ids.update(db.scalars(select(PaymentObservation.payment_id).where(PaymentObservation.intent_id==intent_id)))
+        ids.update(db.scalars(select(PaymentRefund.payment_id).where(PaymentRefund.intent_id==intent_id)))
     return ids
 
 
@@ -2016,7 +2074,7 @@ def cancel_payment_checkout(intent_id: str, data: CancelCheckoutIn, user: User =
                 mp.call('PUT', '/v1/payments/'+pid, {'status':'cancelled'}, key='cancel-pay-'+intent.id+'-'+pid)
                 payment = mp.call('GET', '/v1/payments/'+pid)
                 validate_cancel_payment(payment, intent, config)
-            if payment.get('status') not in ('cancelled','rejected'):
+            if payment.get('status') not in ('cancelled','rejected') and not fully_refunded(payment):
                 apply_provider_payment(payment)
                 raise HTTPException(409, 'El pago no está cancelado; reserva conservada y requiere conciliación')
             checked.add(pid)
@@ -2034,6 +2092,192 @@ def cancel_payment_checkout(intent_id: str, data: CancelCheckoutIn, user: User =
         current.checkout_url = None
         db.add(Audit(empresa_id=user.empresa_id, branch_id=current.branch_id,
             actor_id=user.id, action='checkout_cancelled', record_id=user.id))
+        db.commit()
+        return intent_view(current)
+
+
+def scoped_payment_intent(db, user, intent_id):
+    intent = db.scalar(select(PaymentIntent).where(PaymentIntent.id == intent_id,
+        PaymentIntent.empresa_id == user.empresa_id))
+    if intent is None or (intent.actor_id != user.id and user.role not in ('admin_general','admin_sucursal')):
+        raise HTTPException(404, 'Cobro no encontrado')
+    branch_for(db, user, intent.branch_id)
+    if intent.empresa_id != mp.settings()['company']:
+        raise HTTPException(403, 'Cuenta de pagos fuera de esta empresa')
+    return intent
+
+
+def refund_view(record):
+    return {'id':record.id,'payment_id':record.payment_id,'amount':str(record.amount),
+        'status':record.status,'provider_refund_id':record.provider_refund_id,
+        'reason':record.reason,'actor_id':record.actor_id,
+        'confirmed_at':record.confirmed_at.isoformat() if record.confirmed_at else None}
+
+
+@app.get('/api/payments/{intent_id}/details')
+def integrated_payment_details(intent_id: str, user: User = Depends(identity)):
+    require_any(user,'sale','report')
+    config=mp.settings()
+    with Session(engine) as db:
+        intent=scoped_payment_intent(db,user,intent_id)
+        db.expunge(intent)
+    payments=[]
+    for pid in sorted(verified_payment_ids(intent.id,intent.payment_id)):
+        payment=mp.call('GET','/v1/payments/'+pid)
+        validate_cancel_payment(payment,intent,config)
+        payments.append({'id':pid,'status':payment.get('status'),
+            'amount':str(intent.amount),'refunded':str(payment.get('transaction_amount_refunded',0)),
+            'refundable':bool(user.role in ('admin_general','admin_sucursal')
+                and payment.get('status')=='approved' and not fully_refunded(payment)
+                and not (intent.status=='completed' and pid==intent.payment_id))})
+    with Session(engine) as db:
+        return {'intent':intent_view(db.get(PaymentIntent,intent_id)), 'payments':payments,
+            'refunds':[refund_view(r) for r in db.scalars(select(PaymentRefund).where(PaymentRefund.intent_id==intent_id))]}
+
+
+class RefundIncidentIn(BaseModel):
+    model_config=ConfigDict(str_strip_whitespace=True,extra='forbid')
+    payment_id: str = Field(pattern=r'^[0-9]{1,100}$')
+    reason: str = Field(min_length=3,max_length=300)
+
+
+@app.post('/api/payments/{intent_id}/refund')
+def refund_checkout_incident(intent_id: str, data: RefundIncidentIn, user: User = Depends(identity)):
+    require(user,'sale_return');config=mp.settings()
+    with Session(engine) as db:
+        intent=scoped_payment_intent(db,user,intent_id)
+        db.expunge(intent)
+    payment=mp.call('GET','/v1/payments/'+data.payment_id)
+    validate_cancel_payment(payment,intent,config)
+    if payment.get('status') not in ('approved','refunded'):
+        raise HTTPException(409,'Estado no reembolsable; consulta el proveedor')
+    remaining=money(intent.amount-Decimal(str(payment.get('transaction_amount_refunded',0))))
+    if remaining<0:
+        raise HTTPException(409,'Importe reembolsado inválido')
+    with Session(engine) as db:
+        db.scalar(select(Branch).where(Branch.id==intent.branch_id).with_for_update())
+        current=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent.id).with_for_update())
+        delivered=db.scalar(select(Sale).where(Sale.empresa_id==user.empresa_id,Sale.request_key=='mp-sale-'+intent.id))
+        if delivered and (current.payment_id==data.payment_id or not current.payment_id):
+            raise HTTPException(409,'Pago de ticket entregado: utiliza devoluciones para conservar inventario y contabilidad')
+        operation=db.scalar(select(PaymentRefund).where(PaymentRefund.payment_id==data.payment_id))
+        if operation and (operation.empresa_id!=user.empresa_id or operation.intent_id!=intent.id):
+            raise HTTPException(409,'Pago asociado a otra operación de reembolso')
+        if operation and operation.status=='confirmed' and fully_refunded(payment):
+            return refund_view(operation)
+        if operation is None:
+            import uuid
+            operation=PaymentRefund(empresa_id=user.empresa_id,intent_id=intent.id,payment_id=data.payment_id,
+                amount=remaining,provider_key=str(uuid.uuid4()),reason=data.reason,actor_id=user.id)
+            db.add(operation);db.flush()
+            db.add(Audit(empresa_id=user.empresa_id,branch_id=intent.branch_id,actor_id=user.id,
+                action='payment_refund_requested',record_id=operation.id))
+        record_payment_observation(db,current,payment)
+        if not delivered and (not current.payment_id or current.payment_id==data.payment_id) and not current.cancel_requested_at:
+            current.cancel_requested_at=datetime.now(timezone.utc)
+            current.cancel_reason='Reembolso: '+data.reason[:280]
+            current.cancel_actor_id=user.id
+            current.status='cancel_pending'
+        current.review_reason='Reembolso en conciliación del pago '+data.payment_id
+        db.commit();db.refresh(operation);db.expunge(operation)
+    try:
+        if not fully_refunded(payment):
+            if operation.status=='confirmed':
+                raise HTTPException(409,'El estado de un reembolso confirmado cambió; requiere revisión')
+            if operation.amount<=0:
+                raise HTTPException(409,'Importe del reembolso requiere revisión')
+            result=mp.call('POST','/v1/payments/'+data.payment_id+'/refunds',
+                {'amount':float(operation.amount)},key=operation.provider_key)
+            if str(result.get('payment_id'))!=data.payment_id or Decimal(str(result.get('amount',0)))!=operation.amount:
+                raise HTTPException(502,'Respuesta de reembolso no coincide; operación conservada para consulta')
+            with Session(engine) as db:
+                stored=db.get(PaymentRefund,operation.id)
+                stored.provider_refund_id=str(result.get('id',''))[:100] or None
+                db.commit()
+        verified=mp.call('GET','/v1/payments/'+data.payment_id)
+        validate_cancel_payment(verified,intent,config)
+        with Session(engine) as db:
+            db.scalar(select(Branch).where(Branch.id==intent.branch_id).with_for_update())
+            record_payment_observation(db,db.get(PaymentIntent,intent.id),verified)
+            stored=db.get(PaymentRefund,operation.id)
+            if fully_refunded(verified):
+                if stored.status!='confirmed':
+                    stored.status='confirmed';stored.confirmed_at=datetime.now(timezone.utc)
+                    db.add(Audit(empresa_id=user.empresa_id,branch_id=intent.branch_id,actor_id=user.id,
+                        action='payment_refund_confirmed',record_id=stored.id))
+            else:
+                stored.status='uncertain'
+            db.commit()
+            return refund_view(stored)
+    except HTTPException:
+        with Session(engine) as db:
+            stored=db.get(PaymentRefund,operation.id)
+            if stored.status!='confirmed':stored.status='uncertain'
+            db.commit()
+        raise
+
+
+@app.post('/api/payments/{intent_id}/resolve')
+def resolve_payment_incident(intent_id: str, user: User = Depends(identity)):
+    require(user,'sale_return');config=mp.settings()
+    with Session(engine) as db:
+        intent=scoped_payment_intent(db,user,intent_id)
+        baseline={r.payment_id:r.updated_at for r in db.scalars(select(PaymentObservation).where(PaymentObservation.intent_id==intent.id))}
+        db.expunge(intent)
+    observations={}
+    for pid in sorted(verified_payment_ids(intent.id,intent.payment_id)):
+        pay=mp.call('GET','/v1/payments/'+pid)
+        validate_cancel_payment(pay,intent,config)
+        observations[pid]=pay
+    with Session(engine) as db:
+        db.scalar(select(Branch).where(Branch.id==intent.branch_id).with_for_update())
+        current=db.scalar(select(PaymentIntent).where(PaymentIntent.id==intent.id).with_for_update())
+        records=db.scalars(select(PaymentObservation).where(PaymentObservation.intent_id==intent.id)).all()
+        if any(baseline.get(r.payment_id)!=r.updated_at for r in records):
+            raise HTTPException(409,'Llegó una notificación durante conciliación; consulta de nuevo')
+        known={r.payment_id for r in records}
+        if not known <= observations.keys() or (current.payment_id and current.payment_id not in observations):
+            raise HTTPException(409,'El pago cambió durante la consulta; vuelve a conciliar')
+        refunds=db.scalars(select(PaymentRefund).where(PaymentRefund.intent_id==intent.id)).all()
+        for refund in refunds:
+            pay=observations.get(refund.payment_id)
+            if not pay or not fully_refunded(pay):
+                raise HTTPException(409,'Hay un reembolso sin confirmar; conserva la incidencia')
+        delivered=db.scalar(select(Sale).where(Sale.empresa_id==user.empresa_id,Sale.request_key=='mp-sale-'+intent.id))
+        if delivered and not current.payment_id:
+            raise HTTPException(409,'Ticket sin pago principal identificado; requiere revisión')
+        candidates=[]
+        for pid,pay in observations.items():
+            if delivered and pid==current.payment_id:
+                if pay.get('status')!='approved' or Decimal(str(pay.get('transaction_amount_refunded',0)))!=0:
+                    raise HTTPException(409,'El ticket entregado tiene reembolso o contracargo; concilia su devolución')
+            elif pay.get('status') not in ('cancelled','rejected') and not fully_refunded(pay):
+                if (not delivered and not current.cancel_requested_at and pay.get('status')=='approved'
+                    and Decimal(str(pay.get('transaction_amount_refunded',0)))==0):
+                    candidates.append(pid)
+                else:
+                    raise HTTPException(409,'Persisten pagos pendientes, aprobados o contracargos; incidencia conservada')
+        if len(candidates)>1:
+            raise HTTPException(409,'Hay más de un pago aprobado; reembolsa el excedente')
+        if candidates:
+            current.payment_id=candidates[0];current.status='approved'
+        elif not delivered and not current.cancel_requested_at:
+            if not observations:
+                raise HTTPException(409,'No hay pagos observados: cancela el checkout para cerrar la operación')
+            current.cancel_requested_at=datetime.now(timezone.utc)
+            current.cancel_actor_id=user.id;current.cancel_reason='Conciliación de pagos sin entrega'
+            current.status='cancel_pending'
+        for pay in observations.values():
+            record_payment_observation(db,current,pay)
+        for refund in refunds:
+            if refund.status!='confirmed':
+                refund.status='confirmed';refund.confirmed_at=datetime.now(timezone.utc)
+                db.add(Audit(empresa_id=user.empresa_id,branch_id=intent.branch_id,actor_id=user.id,
+                    action='payment_refund_confirmed',record_id=refund.id))
+        current.review_reason=None
+        current.resolved_by=user.id;current.resolved_at=datetime.now(timezone.utc)
+        db.add(Audit(empresa_id=user.empresa_id,branch_id=intent.branch_id,actor_id=user.id,
+            action='payment_incident_resolved',record_id=user.id))
         db.commit()
         return intent_view(current)
 
@@ -2079,6 +2323,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
     if 'payment_intents' in inspect(engine).get_table_names() and 'cancel_requested_at' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'payment_intents' in inspect(engine).get_table_names() and 'delivery_cash_session_id' not in {c['name'] for c in inspect(engine).get_columns('payment_intents')}:
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'payment_intents' in inspect(engine).get_table_names() and not {'payment_refunds','payment_observations'} <= set(inspect(engine).get_table_names()):
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:

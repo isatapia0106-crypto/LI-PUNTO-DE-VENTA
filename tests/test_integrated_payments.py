@@ -274,3 +274,125 @@ def test_delivery_rejects_other_cashier_branch_and_closed_destination(provider):
     with Session(engine) as db:
         stored=db.get(PaymentIntent,intent['id'])
         assert stored.reservation_active and stored.delivery_cash_session_id is None
+
+
+@pytest.fixture
+def refund_provider(cancellation_provider,monkeypatch):
+    def install(intent):
+        state=cancellation_provider(intent);base=mp.call
+        state.update({'refunds':{},'refund_calls':[],'timeout':None})
+        def call(method,path,payload=None,key=None):
+            if method=='POST' and path.endswith('/refunds'):
+                from fastapi import HTTPException
+                state['refund_calls'].append((key,payload['amount']))
+                if state['timeout']=='before':
+                    state['timeout']=None;raise HTTPException(502,'Timeout antes de confirmar')
+                pid=path.split('/')[-2]
+                if key not in state['refunds']:
+                    pay=state['payments'][pid]
+                    pay['transaction_amount_refunded']=str(Decimal(str(pay.get('transaction_amount_refunded',0)))+Decimal(str(payload['amount'])))
+                    pay['status']='refunded'
+                    state['refunds'][key]={'id':str(len(state['refunds'])+1),'payment_id':pid,'amount':payload['amount'],'status':'approved'}
+                if state['timeout']=='after':
+                    state['timeout']=None;raise HTTPException(502,'Respuesta perdida después de reembolsar')
+                return state['refunds'][key]
+            return base(method,path,payload,key)
+        monkeypatch.setattr(mp,'call',call)
+        return state
+    return install
+
+
+def refund_payment(intent,pay,headers=ADMIN,reason='Cobro duplicado sin entrega'):
+    return client.post(f"/api/payments/{intent['id']}/refund",headers=headers,json={'payment_id':str(pay['id']),'reason':reason})
+
+
+def test_refund_undelivered_then_close_checkout_releases_reservation(refund_provider):
+    from backend.app.main import PaymentRefund, Stock
+    headers,_,pid,intent,_=setup_intent();state=refund_provider(intent)
+    pay=payment(intent);state['payments'][str(pay['id'])]=pay;notify(pay)
+    assert refund_payment(intent,pay,headers).status_code==403
+    assert refund_payment(intent,pay,OUTSIDER).status_code==404
+    r=refund_payment(intent,pay);assert r.status_code==200,r.text
+    assert r.json()['status']=='confirmed' and len(state['refunds'])==1
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id']);assert saved.reservation_active and saved.cancel_requested_at
+        assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==10
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==409
+    assert client.post(f"/api/payments/{intent['id']}/resolve",headers=ADMIN,json={}).status_code==200
+    assert cancel(intent,headers).json()['reserved'] is False
+    again=refund_payment(intent,pay);assert again.status_code==200 and again.json()['id']==r.json()['id']
+    assert len(state['refund_calls'])==1
+    with Session(engine) as db:assert db.get(PaymentIntent,intent['id']).review_reason is None
+
+
+@pytest.mark.parametrize('timing',['before','after'])
+def test_refund_timeout_reuses_durable_key_and_confirms_without_duplicate(refund_provider,timing):
+    from backend.app.main import PaymentRefund
+    _,_,_,intent,_=setup_intent();state=refund_provider(intent)
+    pay=payment(intent);state['payments'][str(pay['id'])]=pay;notify(pay);state['timeout']=timing
+    assert refund_payment(intent,pay).status_code==502
+    with Session(engine) as db:
+        op=db.scalar(select(PaymentRefund).where(PaymentRefund.intent_id==intent['id']))
+        assert op.status=='uncertain';saved_key=op.provider_key
+    r=refund_payment(intent,pay);assert r.status_code==200,r.text
+    assert r.json()['status']=='confirmed' and len(state['refunds'])==1
+    assert {k for k,_ in state['refund_calls']}=={saved_key}
+    assert Decimal(pay['transaction_amount_refunded'])==Decimal(intent['amount'])
+
+
+def test_extra_payment_after_delivery_refunded_without_altering_original_sale(refund_provider):
+    from backend.app.main import Stock, SaleReturn, PaymentObservation
+    headers,turn,pid,intent,_=setup_intent();state=refund_provider(intent)
+    original=payment(intent);state['payments'][str(original['id'])]=original;notify(original)
+    sale=client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).json()
+    extra=payment(intent,id=str(int(original['id'])+1));state['payments'][str(extra['id'])]=extra
+    assert notify(extra).status_code==409
+    assert refund_payment(intent,original).status_code==409
+    r=refund_payment(intent,extra);assert r.status_code==200,r.text
+    assert client.post(f"/api/payments/{intent['id']}/resolve",headers=ADMIN,json={}).status_code==200
+    assert notify(extra).status_code==200
+    with Session(engine) as db:
+        saved=db.get(PaymentIntent,intent['id']);assert saved.status=='completed' and saved.review_reason is None
+        assert not saved.cancel_requested_at and saved.payment_id==str(original['id'])
+        assert db.scalar(select(Stock).where(Stock.product_id==pid,Stock.branch_id==6)).quantity==9
+        assert not db.scalar(select(SaleReturn).where(SaleReturn.sale_id==sale['id']))
+        assert len(db.scalars(select(PaymentObservation).where(PaymentObservation.intent_id==intent['id'])).all())==2
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).json()['id']==sale['id']
+
+
+def test_resolve_does_not_forget_extra_payment_when_search_is_incomplete(refund_provider,monkeypatch):
+    headers,_,_,intent,_=setup_intent();state=refund_provider(intent)
+    original=payment(intent);extra=payment(intent,id=str(int(original['id'])+1))
+    state['payments'].update({str(original['id']):original,str(extra['id']):extra})
+    notify(original);notify(extra);base=mp.call
+    def missing(method,path,payload=None,key=None):
+        if path.startswith('/v1/payments/search?'):return {'results':[original],'paging':{'total':1}}
+        return base(method,path,payload,key)
+    monkeypatch.setattr(mp,'call',missing)
+    assert client.post(f"/api/payments/{intent['id']}/resolve",headers=ADMIN,json={}).status_code==409
+    assert len(client.get(f"/api/payments/{intent['id']}/details",headers=ADMIN).json()['payments'])==2
+    assert refund_payment(intent,extra).status_code==200
+    assert client.post(f"/api/payments/{intent['id']}/resolve",headers=ADMIN,json={}).status_code==200
+    assert client.post(f"/api/payments/{intent['id']}/confirm",headers=headers,json={}).status_code==200
+
+
+def test_refund_rejects_mismatched_payment_and_handles_existing_partial(refund_provider):
+    from backend.app.main import PaymentRefund
+    _,_,_,intent,_=setup_intent();state=refund_provider(intent)
+    bad=payment(intent,id='999999',collector_id=999);state['payments'][str(bad['id'])]=bad
+    assert refund_payment(intent,bad).status_code==409 and not state['refund_calls']
+    pay=payment(intent,transaction_amount_refunded='10');state['payments'][str(pay['id'])]=pay
+    r=refund_payment(intent,pay);assert r.status_code==200,r.text
+    assert Decimal(r.json()['amount'])==Decimal(intent['amount'])-Decimal('10')
+    assert Decimal(pay['transaction_amount_refunded'])==Decimal(intent['amount'])
+
+
+def test_external_full_refund_can_be_resolved_then_cancelled_without_new_refund(refund_provider):
+    headers,_,_,intent,_=setup_intent();state=refund_provider(intent)
+    pay=payment(intent,status='refunded',transaction_amount_refunded=intent['amount'])
+    state['payments'][str(pay['id'])]=pay;notify(pay)
+    r=client.post(f"/api/payments/{intent['id']}/resolve",headers=ADMIN,json={})
+    assert r.status_code==200,r.text
+    assert r.json()['cancellation_pending'] and not r.json()['review_reason']
+    assert cancel(intent,headers).json()['reserved'] is False
+    assert not state['refund_calls']

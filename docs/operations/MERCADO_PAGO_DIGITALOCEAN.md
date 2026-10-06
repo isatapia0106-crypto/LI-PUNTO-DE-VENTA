@@ -12,7 +12,7 @@ Los cobros reales están deshabilitados por defecto. No se han utilizado credenc
 
 Los checkouts nuevos reservan inventario y congelan el precio; el cajero confirma el pago e imprime el ticket. No se emite ticket automáticamente desde el webhook. Si cambia la autorización del cajero o existe una incidencia del pago, se conserva el registro para revisión. Si el turno original se cerró, el mismo cajero puede registrar la entrega en un nuevo turno abierto de la misma sucursal. No vuelvas a cobrar manualmente un checkout ya pagado. No crees otro checkout para un intento ambiguo; revisa el historial y la cuenta del proveedor.
 
-La creación de preferencias guarda el intento antes de llamar a la API. Ante timeout queda creating, sin regeneración automática, para evitar enlaces duplicados. Se requiere conciliación supervisada de estos casos. Los pagos adicionales al mismo checkout, contracargos y reembolsos externos se bloquean para revisión. No existe todavía automatización de reembolsos ni recuperación completa de creación ambigua; son pendientes antes de producción sin supervisión. El historial muestra los últimos 100 checkouts.
+La creación de preferencias guarda el intento antes de llamar a la API. Ante timeout queda creating, sin regeneración automática, para evitar enlaces duplicados. Se requiere conciliación supervisada de estos casos. Los pagos adicionales al mismo checkout, contracargos y reembolsos externos se bloquean para revisión. Hay reembolsos idempotentes de incidencias sin entrega, iniciados por administración. Los reembolsos de tickets entregados y la recuperación completa de creación ambigua siguen pendientes de integración y validación antes de producción sin supervisión. El historial muestra los últimos 100 checkouts.
 
 La cuenta MP configurada pertenece a una empresa mediante MP_EMPRESA_ID. Para varias razones sociales hace falta configurar una cuenta por empresa; no se permite mezclar cuentas. No se admiten descuentos en esta primera ruta integrada. Se puede continuar con pagos manuales autorizados.
 
@@ -94,8 +94,8 @@ verificaciones anteriores. No hay tarea programada de liberación.
 **Pagos tardíos:** una consulta no puede garantizar que nunca llegue una aprobación
 posterior. Un webhook o conciliación de un pago no terminal tras liberar la reserva
 registra una incidencia durable. El checkout permanece cancelado y no puede emitir
-ticket, ni reclamar inventario ya liberado. Requiere revisión y reembolso externo;
-no se ejecutan reembolsos remotos ni asientos automáticos. Los estados aprobados o
+ticket, ni reclamar inventario ya liberado. Requiere revisión y reembolso desde el panel de incidencias por administración;
+no se reembolsa automáticamente desde el webhook ni se generan asientos de tickets entregados. Los estados aprobados o
 las ventas entregadas no se cancelan por este flujo. Cerrar el turno antes de emitir
 el ticket de un pago aprobado permite entrega en un nuevo turno del mismo cajero,
 con las verificaciones que se describen abajo.
@@ -147,3 +147,41 @@ transferir la entrega a otro cajero o sucursal ni cambiar el turno original mien
 permanece abierto. Las operaciones antiguas ya entregadas recuperan sus datos de turno
 a partir de su venta existente durante la migración. No se modifica la fecha ni el
 importe del pago del proveedor.
+
+## Reembolso de cobros duplicados y pagos tardíos
+
+Abre **Ver pagos e incidencias**. Se consultan los pagos del proveedor y todos los
+identificadores conservados por webhook o intentos de reembolso, aunque no aparezcan
+en la búsqueda. Administración general o de sucursal puede seleccionar **Reembolsar
+restante**, capturar un motivo y confirmar el envío al proveedor. Se devuelve todo
+el importe pendiente del pago elegido: no admite un importe libre ni modifica el
+inventario o el efectivo de caja. Cuenta, empresa, referencia, MXN, importe y entorno
+se verifican de nuevo en el servidor. El pago principal de un ticket ya entregado
+está bloqueado en este flujo; usa Devoluciones y conciliación de ese ticket.
+
+Antes del POST a Mercado Pago se guarda una operación única por payment_id, el
+importe, UUID de idempotencia, motivo y administrador. Si hay timeout queda uncertain.
+**Verificar o reintentar** consulta primero el pago: si el proveedor confirma que
+ya se devolvió todo, no envía otro POST. Si aún falta confirmación, conserva el mismo
+UUID e importe. Un 200 del POST no basta: el saldo reembolsado del recurso de pago
+debe coincidir con el importe original. Puede faltar la referencia del reembolso
+si se perdió la respuesta; el historial registra la confirmación por el pago.
+
+Después pulsa **Verificar y resolver incidencia**. No borra alertas por decisión
+manual: consulta todos los pagos conocidos y exige que cada excedente esté cancelado,
+rechazado o totalmente reembolsado. En una venta entregada, el pago principal debe
+seguir aprobado y sin reembolso. Un contracargo o reembolso de ese ticket exige
+conciliación de su devolución y no puede cerrarse desde este flujo. Una notificación
+concurrente obliga a repetir la consulta. Los reembolsos inciertos que se observan
+completos quedan confirmados con auditoría.
+
+Para un checkout sin entrega cuyo pago principal se reembolsa, se bloquea la emisión
+de ticket, pero no se libera la reserva ni se cierra el enlace en ese paso. Resuelve
+la incidencia y usa **Cancelar checkout** para cerrar la preferencia y verificar todos
+los pagos antes de liberar inventario. Si sólo se devuelve un pago extra, el pago
+principal puede continuar hacia entrega después de resolver la incidencia.
+
+El historial muestra Registrado, Por confirmar o Confirmado (estados internos prepared/uncertain/confirmed). La última conciliación registra administrador y fecha en el checkout.
+No representan una garantía de abono bancario inmediato al comprador. No se ejecutaron
+reembolsos reales durante el desarrollo. Hay que validar rechazos, timeout y reintentos
+con Mercado Pago en una cuenta de pruebas antes de habilitar producción.
