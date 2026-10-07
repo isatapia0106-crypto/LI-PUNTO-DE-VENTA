@@ -320,3 +320,12 @@
 #checkoutCancelDialog textarea{display:block;width:100%;min-height:90px;background:#2d3035;color:#fff;border:1px solid #4b535f;border-radius:9px;padding:12px;font:inherit;resize:vertical}#checkoutCancelDialog .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px}#checkoutCancelError{color:#ffb4b4}
 
 #paymentIncidentDialog{width:min(850px,94vw)}#paymentIncidentDialog .sale{padding:12px 0;border-bottom:1px solid #41454e;overflow-wrap:anywhere}#paymentIncidentError{color:#ffb4b4}#paymentRefundForm{padding:16px;background:#2d3035;border-radius:12px;margin-top:16px}
+
+.assistant-launch{position:fixed;right:20px;bottom:82px;z-index:25;background:var(--accent,#e7bb68);color:#171717;box-shadow:0 6px 24px #0006}
+#assistantDialog{width:min(560px,calc(100vw - 24px));max-height:90dvh;padding:22px;box-sizing:border-box}
+.assistant-messages{max-height:42dvh;overflow-y:auto;display:grid;gap:12px;margin:16px 0}
+.assistant-question{padding:12px;border-radius:12px;background:#b28c3826;margin:0;overflow-wrap:anywhere}
+.assistant-answer{padding:14px;border:1px solid #8885;border-radius:12px;overflow-wrap:anywhere}
+.assistant-answer p{margin:0 0 8px}.assistant-answer small{opacity:.7}
+#assistantSuggestions{flex-wrap:wrap;gap:6px}#assistantForm{margin-top:14px}
+@media(max-width:600px){#assistantDialog{padding:16px}.assistant-launch{right:12px;bottom:84px}}

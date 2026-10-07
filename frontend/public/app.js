@@ -474,3 +474,29 @@ $('paymentIncidentResolve').onclick=run(async()=>{
 });
 
 function paymentStatusLabel(status){return {creating:'Creando cobro',pending:'Pendiente',in_process:'En proceso',authorized:'Autorizado',approved:'Aprobado',completed:'Ticket emitido',refunded:'Reembolsado',charged_back:'Contracargo',cancelled:'Cancelado',rejected:'Rechazado',cancel_pending:'Cancelación pendiente',prepared:'Registrado',uncertain:'Por confirmar',confirmed:'Confirmado'}[status]??status;}
+
+let assistantVersion=0;
+function resetAssistant(){assistantVersion++;$('assistantMessages').replaceChildren();$('assistantError').textContent='';$('assistantInput').value='';$('assistantDialog').close();}
+$('branch').addEventListener('change',resetAssistant);
+$('logout').addEventListener('click',resetAssistant);
+$('assistantOpen').onclick=()=>{if(!token)return notice('Inicia sesión para consultar al asistente.');$('assistantDialog').showModal();$('assistantInput').focus();};
+$('assistantClose').onclick=()=>$('assistantDialog').close();
+async function askAssistant(message){
+ if(!token)return;
+ const version=assistantVersion,selected=branchId();
+ $('assistantSend').disabled=true;$('assistantError').textContent='';
+ const log=$('assistantMessages');log.append(node('p',message,'assistant-question'));
+ while(log.children.length>24)log.firstElementChild.remove();
+ try{
+  const result=await post('/api/assistant/chat',{branch_id:selected,message});
+  if(version!==assistantVersion||selected!==branchId()||!token)return;
+  const card=node('article',undefined,'assistant-answer');card.append(node('p',result.answer));
+  for(const item of result.items)card.append(node('p',item.label+': '+item.value));
+  if(result.truncated)card.append(node('p','Se muestran los primeros 20 resultados. Consulta el módulo para ver el detalle.'));
+  card.append(node('small',result.branch_name+' · '+fecha(result.generated_at)+(result.source?' · Fuente: '+result.source:'')));
+  log.append(card);log.scrollTop=log.scrollHeight;
+ }catch(error){if(version===assistantVersion)$('assistantError').textContent=error.message;}
+ finally{$('assistantSend').disabled=false;}
+}
+$('assistantForm').onsubmit=async event=>{event.preventDefault();const message=$('assistantInput').value.trim();if(message.length<2||$('assistantSend').disabled)return;$('assistantInput').value='';await askAssistant(message);};
+for(const b of document.querySelectorAll('[data-assistant]'))b.onclick=()=>{if(!$('assistantSend').disabled)askAssistant(b.dataset.assistant);};

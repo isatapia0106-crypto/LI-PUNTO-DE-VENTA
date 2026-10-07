@@ -2457,3 +2457,9 @@ def home():
     return FileResponse(frontend / 'index.html')
 
 
+
+from .assistant import AssistantIn, answer as assistant_answer
+
+@app.post("/api/assistant/chat")
+def assistant_chat(data: AssistantIn, user: User = Depends(identity)):
+    return assistant_answer(data, user)
