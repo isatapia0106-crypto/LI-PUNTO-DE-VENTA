@@ -341,6 +341,7 @@ class Purchase(Base):
 
 class PurchaseItem(Base):
     __tablename__ = 'purchase_items'
+    tax_rate: Mapped[Decimal] = mapped_column(Numeric(6,4),default=Decimal('0'),server_default='0')
     id: Mapped[int] = mapped_column(primary_key=True)
     purchase_id: Mapped[int] = mapped_column(ForeignKey('purchases.id'))
     product_id: Mapped[int] = mapped_column(ForeignKey('products.id'))
@@ -1514,6 +1515,7 @@ class SupplierIn(BaseModel):
     reference: str | None = Field(default=None, max_length=100)
 
 class PurchaseLine(BaseModel):
+    tax_rate: Decimal = Field(default=Decimal('0'),ge=0,le=1,decimal_places=4)
     product_id: int = Field(gt=0)
     quantity: int = Field(gt=0, le=100000)
     unit_cost: Decimal = Field(ge=0, le=99999999, decimal_places=4)
@@ -1586,15 +1588,19 @@ def purchase_receipts(purchase_id: int, user: User = Depends(identity)):
 
 def purchase_view(db, purchase):
     supplier = db.get(Supplier, purchase.supplier_id)
+    subtotal=sum((money(x.unit_cost*x.quantity) for x in purchase.items),Decimal('0'))
+    tax=sum((money(money(x.unit_cost*x.quantity)*x.tax_rate) for x in purchase.items),Decimal('0'))
     return {'id': purchase.id, 'branch_id': purchase.branch_id, 'supplier_id': purchase.supplier_id,
             'supplier_name': supplier.name, 'reference': purchase.reference, 'status': purchase.status,
             'cancel_reason': purchase.cancel_reason, 'cancelled_by': purchase.cancelled_by,
             'cancelled_at': purchase.cancelled_at.isoformat() if purchase.cancelled_at else None,
             'created_at': purchase.created_at.isoformat(), 'actor_id': purchase.actor_id,
-            'total_cost': str(money(sum((x.unit_cost * x.quantity for x in purchase.items), Decimal('0')))),
+            'total_cost': str(money(subtotal)), 'tax':str(money(tax)), 'total':str(money(subtotal+tax)),
             'items': [{'product_id': x.product_id, 'name': x.name, 'quantity': x.quantity,
                        'received': x.received, 'cancelled': x.quantity-x.received if purchase.status=='cancelled' else 0,
-                       'pending': 0 if purchase.status=='cancelled' else x.quantity - x.received, 'unit_cost': str(x.unit_cost)} for x in purchase.items]}
+                       'pending': 0 if purchase.status=='cancelled' else x.quantity - x.received, 'unit_cost': str(x.unit_cost),
+                       'tax_rate':str(x.tax_rate),'subtotal':str(money(x.unit_cost*x.quantity)),
+                       'tax':str(money(money(x.unit_cost*x.quantity)*x.tax_rate))} for x in purchase.items]}
 
 @app.get('/api/purchases')
 def purchases(branch_id: int, user: User = Depends(identity)):
@@ -1616,8 +1622,8 @@ def create_purchase(data: PurchaseIn, idempotency_key: str = Header(min_length=8
         previous = db.scalar(select(Purchase).where(Purchase.empresa_id == user.empresa_id, Purchase.request_key == idempotency_key))
         if previous:
             if (previous.branch_id, previous.supplier_id, previous.reference,
-                sorted((x.product_id, x.quantity, x.unit_cost) for x in previous.items)) != (data.branch_id, data.supplier_id,
-                data.reference.strip(), sorted((x.product_id, x.quantity, x.unit_cost) for x in data.items)):
+                sorted((x.product_id, x.quantity, x.unit_cost, x.tax_rate) for x in previous.items)) != (data.branch_id, data.supplier_id,
+                data.reference.strip(), sorted((x.product_id, x.quantity, x.unit_cost, x.tax_rate) for x in data.items)):
                 raise HTTPException(409, 'Clave de compra utilizada con otros datos')
             return {**purchase_view(db, previous), 'replayed': True}
         supplier = db.scalar(select(Supplier).where(Supplier.id == data.supplier_id, Supplier.empresa_id == user.empresa_id))
@@ -1627,7 +1633,7 @@ def create_purchase(data: PurchaseIn, idempotency_key: str = Header(min_length=8
         names = {p.id: p.name for p in products}
         purchase = Purchase(empresa_id=user.empresa_id, branch_id=data.branch_id, supplier_id=supplier.id,
                     reference=data.reference.strip(), request_key=idempotency_key, actor_id=user.id,
-                    items=[PurchaseItem(product_id=x.product_id, name=names[x.product_id], quantity=x.quantity, unit_cost=x.unit_cost) for x in data.items])
+                    items=[PurchaseItem(product_id=x.product_id, name=names[x.product_id], quantity=x.quantity, unit_cost=x.unit_cost,tax_rate=x.tax_rate) for x in data.items])
         db.add(purchase)
         try:
             db.flush()
@@ -2450,6 +2456,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
     if 'sale_returns' in inspect(engine).get_table_names() and 'status' not in {c['name'] for c in inspect(engine).get_columns('sale_returns')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'purchases' in inspect(engine).get_table_names() and 'cancel_reason' not in {c['name'] for c in inspect(engine).get_columns('purchases')}:
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'purchase_items' in inspect(engine).get_table_names() and 'tax_rate' not in {c['name'] for c in inspect(engine).get_columns('purchase_items')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:
