@@ -494,7 +494,9 @@ async function askAssistant(message){
   for(const item of result.items)card.append(node('p',item.label+': '+item.value));
   if(result.truncated)card.append(node('p','Se muestran los primeros 20 resultados. Consulta el módulo para ver el detalle.'));
   card.append(node('small',result.branch_name+' · '+fecha(result.generated_at)+(result.source?' · Fuente: '+result.source:'')));
-  log.append(card);log.scrollTop=log.scrollHeight;
+  const target={'/api/reports/sales':'reports','/api/stock/alerts':'inventory','/api/products':'sales','/api/cash/sessions':'cash'}[result.source];
+  if(target)card.append(button('Abrir módulo',()=>{$('assistantDialog').close();panel(target);}));
+  log.append(card);while(log.children.length>24)log.firstElementChild.remove();log.scrollTop=log.scrollHeight;
  }catch(error){if(version===assistantVersion)$('assistantError').textContent=error.message;}
  finally{$('assistantSend').disabled=false;}
 }

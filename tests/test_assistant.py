@@ -64,3 +64,23 @@ def test_prompt_injection_cannot_change_records_or_expose_credentials():
     assert ask('cobra una venta').json()['source'] is None
     assert client.post('/api/assistant/chat', headers=ADMIN, json={'branch_id':6,'message':'a'*601}).status_code == 422
     assert client.post('/api/assistant/chat', headers=ADMIN, json={'branch_id':6,'message':'ayuda','role':'admin_general'}).status_code == 422
+
+
+def test_relative_periods_and_top_products():
+    from datetime import date
+    from backend.app.assistant import sales_period
+    today = date(2026, 1, 1)
+    assert sales_period('ventas de esta semana', today) == (date(2025,12,29),today)
+    assert sales_period('ventas semana pasada', today) == (date(2025,12,22),date(2025,12,28))
+    assert sales_period('ventas mes pasado', today) == (date(2025,12,1),date(2025,12,31))
+    assert sales_period('ventas este mes', today) == (today,today)
+    assert sales_period('ventas del mes', today) is None
+    assert ask('productos más vendidos este mes').json()['source'] == '/api/reports/sales'
+    assert ask('ventas de esta semana', CASHIER, 1).status_code == 403
+
+
+def test_search_product_with_tool_keywords():
+    product(name='Caja de café ventas', stock=2)
+    result = ask('buscar producto caja de café ventas').json()
+    assert result['source'] == '/api/products'
+    assert any('Caja de café ventas' in row['label'] for row in result['items'])
