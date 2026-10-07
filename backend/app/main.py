@@ -2463,3 +2463,17 @@ from .assistant import AssistantIn, answer as assistant_answer
 @app.post("/api/assistant/chat")
 def assistant_chat(data: AssistantIn, user: User = Depends(identity)):
     return assistant_answer(data, user)
+
+from .control import audit_page, payment_page
+from fastapi import Query
+
+@app.get('/api/audit')
+def audit_report(branch_id: int, start: date, end: date, actor_id: int | None = Query(default=None, gt=0),
+                 action: str | None = Query(default=None, max_length=50), before_id: int | None = Query(default=None, gt=0),
+                 user: User = Depends(identity)):
+    return audit_page(branch_id,start,end,actor_id,action,before_id,user)
+
+@app.get('/api/reports/payments/reconciliation')
+def payment_reconciliation(branch_id: int, start: date, end: date,
+                           before_id: str | None = Query(default=None, max_length=60), user: User = Depends(identity)):
+    return payment_page(branch_id,start,end,before_id,user)

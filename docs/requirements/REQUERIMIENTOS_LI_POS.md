@@ -1,6 +1,6 @@
 # Requerimientos · LI Punto de Venta
 
-**Versión:** 0.2 · **Estado:** base para revisión operativa · **Fecha:** 30 de septiembre de 2026
+**Versión:** 0.3 · **Estado:** base para revisión operativa · **Fecha:** 7 de octubre de 2026
 
 Este documento define el alcance del sistema LI. Los estados describen lo que existe en el repositorio, no una aprobación para usarlo en ventas reales. La arquitectura toma como referencia los módulos conocidos de TPN; no replica su código privado.
 
@@ -17,24 +17,24 @@ Este documento define el alcance del sistema LI. Los estados describen lo que ex
 | ID | Prioridad | Requerimiento y criterio verificable | Estado actual |
 | --- | --- | --- | --- |
 | SUC-01 | P0 | Registrar empresas, razones sociales y sucursales; impedir acceso cruzado y asignar usuarios a sucursales. | Parcial: seis sucursales demo, empresa y permisos; faltan razones sociales y administración. |
-| SEG-01 | P0 | Iniciar sesión con contraseña protegida, roles y permisos en la API; bloquear cuentas inactivas y registrar actor. | Parcial: JWT, Argon2 y roles; faltan revocación, límites de intentos y revisión de seguridad. |
+| SEG-01 | P0 | Iniciar sesión con contraseña protegida, roles y permisos en la API; bloquear cuentas inactivas y registrar actor. | JWT, Argon2, roles, administración/desactivación de usuarios y revocación implementados. Pendiente revisión integral de seguridad. |
 | CAT-01 | P0 | Crear y consultar productos por SKU, con precio y existencia por sucursal; definir unidad, código de barras, impuestos y vigencia. | Implementado para prueba: SKU, código de barras, unidad entera, edición/activación, precio e impuesto por producto (incluido, separado o exento). Pendientes: precios por sucursal y vigencias por fecha. |
-| INV-01 | P0 | Registrar entradas, salidas, ajustes y traspasos con motivo, usuario y referencia; no permitir existencias negativas; consultar kardex. | Implementado para prueba: alta, ajuste, venta, traspaso, recepción de compras y conteo físico conciliado con verificación de existencias y bitácora. Falta validación operativa en PostgreSQL y conteos masivos. |
+| INV-01 | P0 | Registrar entradas, salidas, ajustes y traspasos con motivo, usuario y referencia; no permitir existencias negativas; consultar kardex. | Implementado para prueba: alta, ajuste, venta, traspaso, recepción de compras y conteo físico conciliado con verificación de existencias y bitácora. Pruebas automatizadas en PostgreSQL; pendientes conteos masivos y aceptación operativa. |
 | VEN-01 | P0 | Capturar carrito, calcular importes por línea, impuestos y total, cobrar y descontar stock una sola vez; rechazar stock y pago insuficientes. | Parcial: impuestos por producto y descuentos con autorización de administración; efectivo, tarjeta y transferencia manual. Faltan validación fiscal e integración de pagos. |
 | VEN-02 | P0 | Asignar folio/serie únicos por emisor y sucursal, conservar detalle histórico y permitir reimpresión de ticket sin alterar la venta. | Implementado folio único de ticket LI-B<sucursal>-<ID global>, historial y reimpresión. La serie es de ticket no fiscal; faltan series por emisor para CFDI. |
 | CAJ-01 | P0 | Abrir turno por caja/cajero, registrar fondo, ventas, entradas/retiros autorizados y cerrar con importe esperado, contado y diferencia. | Implementado para prueba: múltiples cajas, turnos por cajero, entradas/retiros exclusivos de administración, comprobantes e historial de cortes. Pendiente: aprobación separada solicitante/autorizador y conciliación con pagos externos. |
-| AUD-01 | P0 | Registrar acciones críticas con usuario, empresa, sucursal, fecha, entidad e identificador; permitir consulta autorizada. | Parcial: bitácora básica; faltan consulta y cobertura completa. |
+| AUD-01 | P0 | Registrar acciones críticas con usuario, empresa, sucursal, fecha, entidad e identificador; permitir consulta autorizada. | Implementado panel de consulta por sucursal, fecha, actor y operación con paginación. Pendiente revisar cobertura completa de eventos. |
 | CLI-01 | P1 | Crear clientes, identificar datos de contacto y fiscales, consultar historial y vincular ventas. | Parcial: alta, búsqueda, edición, historial por sucursal y vínculo con venta; faltan datos fiscales y consentimiento. |
 | CRE-01 | P1 | Si se aprueba venta a crédito: límite, plazo, saldo, abonos, vencimientos y bloqueo por excedente; conciliar con caja. | Pendiente de decisión de negocio. |
 | COM-01 | P1 | Registrar proveedores, órdenes, recepción parcial, costos y actualización de inventario con trazabilidad. | Implementado para prueba: alta/edición de proveedores, órdenes, recepciones parciales, costo promedio por sucursal y bitácora. Faltan cancelación de órdenes, impuestos de compra y cuentas por pagar. |
-| DEV-01 | P1 | Devolver o cancelar mediante autorización, referencia a venta original, ajuste de stock y dinero; si aplica, nota de crédito fiscal. | Pendiente. |
-| REP-01 | P1 | Mostrar ventas, utilidad estimada, inventario, cortes, retiros y diferencias por fecha, sucursal, empresa y forma de pago; exportar. | Parcial: resumen básico por sucursal y método. |
+| DEV-01 | P1 | Devolver o cancelar mediante autorización, referencia a venta original, ajuste de stock y dinero; si aplica, nota de crédito fiscal. | Implementado para prueba: devoluciones, cancelaciones, stock y reembolsos Mercado Pago confirmados. Pendiente nota de crédito fiscal y piloto. |
+| REP-01 | P1 | Mostrar ventas, utilidad estimada, inventario, cortes, retiros y diferencias por fecha, sucursal, empresa y forma de pago; exportar. | Implementado reporte por fecha/cajero, ventas netas, utilidad histórica, Excel e impresión. Conciliación interna de tickets/pagos observados; comisiones y depósitos pendientes. |
 | FIS-01 | P1 | Emitir CFDI 4.0 con PAC elegido, estados de timbrado, reintentos, cancelación y conciliación con venta; resguardar CSD. | Pendiente; depende de datos fiscales y PAC. |
-| PAG-01 | P1 | Integrar terminal Clip con referencia de venta, confirmación verificable, reversos y conciliación; nunca considerar pagado un cobro no confirmado. | Pendiente; tarjeta actual es registro manual. |
+| PAG-01 | P1 | Integrar terminal Clip con referencia de venta, confirmación verificable, reversos y conciliación; nunca considerar pagado un cobro no confirmado. | Mercado Pago implementado para prueba, incluyendo reservas y reembolsos. Clip pendiente si se requiere. Tarjeta/transferencia manuales no confirman cobros externos. |
 | MSG-01 | P2 | Ofrecer enlace de WhatsApp al finalizar la venta para compartir el comprobante, con confirmación manual del operador. | Parcial: texto compartible manualmente; falta flujo de cliente y consentimiento. |
 | OFF-01 | P2 | Si se autoriza operación sin conexión: cola local persistente, identificadores únicos, sincronización, conflictos y límites de caja/stock. | Pendiente; no operar offline con la demo. |
 | HW-01 | P2 | Verificar impresora térmica, lector de código, cajón, terminal y equipo por sucursal; registrar modelos y pruebas. | Pendiente. |
-| OPS-01 | P0 | Disponer de migraciones, respaldo/restauración probado, monitoreo, HTTPS y procedimiento de recuperación antes del piloto real. | Parcial: migraciones Alembic; faltan pruebas operativas completas. |
+| OPS-01 | P0 | Disponer de migraciones, respaldo/restauración probado, monitoreo, HTTPS y procedimiento de recuperación antes del piloto real. | CI verifica migraciones, SQLite/PostgreSQL, restauración comparada e imagen de producción. Infraestructura HTTPS preparada; falta despliegue, monitoreo y piloto real. |
 
 **P0:** necesario antes de un piloto controlado. **P1:** siguiente etapa funcional. **P2:** condicionado a la operación y las integraciones seleccionadas.
 

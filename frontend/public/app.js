@@ -36,13 +36,13 @@ async function post(url, data, withKey=false){
 }
 function panel(name){
  $('mobileCart').hidden=name!=='sales'||!can('sale')||!token;
- for(const p of ['sales','cash','purchases','inventory','reports','users'])$(p+'Panel').hidden=p!==name;
- for(const [id,p] of [['navSales','sales'],['navCash','cash'],['navPurchases','purchases'],['navInventory','inventory'],['navReports','reports'],['navUsers','users']]){
+ for(const p of ['sales','cash','purchases','inventory','reports','users','control'])$(p+'Panel').hidden=p!==name;
+ for(const [id,p] of [['navSales','sales'],['navCash','cash'],['navPurchases','purchases'],['navInventory','inventory'],['navReports','reports'],['navUsers','users'],['navControl','control']]){
   $(id).classList.toggle('is-active',p===name);
   if(p===name)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');
  }
 }
-for(const [id,p] of [['navSales','sales'],['navCash','cash'],['navPurchases','purchases'],['navInventory','inventory'],['navReports','reports'],['navUsers','users']])$(id).onclick=()=>panel(p);
+for(const [id,p] of [['navSales','sales'],['navCash','cash'],['navPurchases','purchases'],['navInventory','inventory'],['navReports','reports'],['navUsers','users'],['navControl','control']])$(id).onclick=()=>panel(p);
 async function loadCustomers(selected=''){
   customersList=await request(`/api/customers?branch_id=${branchId()}&q=${encodeURIComponent($('customerSearch').value.trim())}`);
   options('customer',[{id:'',name:'Público general'},...customersList],c=>c.name+(c.phone?` · ${c.phone}`:''),selected);
@@ -211,7 +211,7 @@ $('branch').onchange=run(async()=>{cart.clear();purchaseDraft.clear();drawPurcha
  try{await refresh();}finally{b.disabled=false;}
 });
 async function start(){me=await request('/api/auth/me');permissions=new Set(me.permissions);branches=await request('/api/branches');options('branch',branches,b=>b.name);$('who').textContent=me.username;
- $('navReports').hidden=!can('report');$('navUsers').hidden=!can('users_write');
+ $('navReports').hidden=!can('report');$('navControl').hidden=!can('report');$('navUsers').hidden=!can('users_write');
  $('newCustomer').hidden=!can('customer_write');$('editCustomer').hidden=!can('customer_write');
  $('new').hidden=!can('catalog_write');$('checkout').hidden=!can('sale');$('navCash').hidden=!can('cash_open')&&!can('report');$('navPurchases').hidden=!can('purchase_read')&&!can('purchase_write');$('navInventory').hidden=!can('stock_write')&&!can('report');$('newSupplier').hidden=!can('purchase_write');$('purchaseForm').hidden=!can('purchase_write');
  panel(can('sale')?'sales':can('purchase_read')?'purchases':'inventory');if(!branches.length)return notice('No tienes sucursales asignadas');if(can('customer_read'))await loadCustomers();await refresh();}
@@ -502,3 +502,33 @@ async function askAssistant(message){
 }
 $('assistantForm').onsubmit=async event=>{event.preventDefault();const message=$('assistantInput').value.trim();if(message.length<2||$('assistantSend').disabled)return;$('assistantInput').value='';await askAssistant(message);};
 for(const b of document.querySelectorAll('[data-assistant]'))b.onclick=()=>{if(!$('assistantSend').disabled)askAssistant(b.dataset.assistant);};
+
+let controlVersion=0,controlCursor=null,controlFilters=null,controlBusy=false;
+function clearControl(){controlVersion++;controlCursor=null;controlFilters=null;controlBusy=false;$('controlRows').replaceChildren();$('controlError').textContent='';$('controlMore').hidden=true;$('navControl').hidden=!token||!can('report');}
+$('branch').addEventListener('change',clearControl);$('logout').addEventListener('click',clearControl);
+const controlToday=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Mexico_City',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+$('controlStart').value=controlToday;$('controlEnd').value=controlToday;
+$('controlKind').onchange=()=>{const audit=$('controlKind').value==='audit';$('controlActor').disabled=!audit;$('controlAction').disabled=!audit;};
+async function loadControl(more=false){
+ if(controlBusy||!can('report'))return;
+ const version=controlVersion;
+ if(!more){controlFilters={branch_id:branchId(),start:$('controlStart').value,end:$('controlEnd').value,kind:$('controlKind').value,actor:$('controlActor').value,action:$('controlAction').value.trim()};controlCursor=null;$('controlRows').replaceChildren();}
+ const f=controlFilters;if(!f)return;
+ controlBusy=true;$('controlMore').disabled=true;$('controlError').textContent='';
+ const q=new URLSearchParams({branch_id:f.branch_id,start:f.start,end:f.end});if(controlCursor)q.set('before_id',controlCursor);
+ if(f.kind==='audit'){if(f.actor)q.set('actor_id',f.actor);if(f.action)q.set('action',f.action);}
+ try{
+  const r=await request((f.kind==='audit'?'/api/audit?':'/api/reports/payments/reconciliation?')+q);
+  if(version!==controlVersion||!token)return;
+  $('controlHelp').textContent=r.scope||'Auditoría por fecha de operación. Hasta 100 registros por página; el ID identifica al usuario y registro originales.';
+  for(const row of r.items){const card=node('article',undefined,'assistant-answer');
+   if(f.kind==='audit'){card.append(node('strong',row.action),node('p',fecha(row.created_at)+' · '+row.actor+' (ID '+(row.actor_id??'sistema')+')'),node('p','Registro '+row.record_id+' · Evento '+row.id));}
+   else{card.append(node('strong',(row.folio||'Sin ticket')+' · '+({matched:'Coincide con registros observados',review:'Revisar',pending:'Pendiente'}[row.state])),node('p','Cobro '+row.id+' · '+fecha(row.created_at)),node('p','Ticket neto: '+pesos(row.local_net)+' · Pago observado neto: '+pesos(row.observed_net)+' · Diferencia: '+pesos(row.difference)),node('p',row.issues.join(' · ')||'Sin diferencias detectadas'),node('small',row.last_observed_at?'Última verificación guardada: '+fecha(row.last_observed_at):'Sin verificación guardada'));}
+   $('controlRows').append(card);
+  }
+  if(!more&&!r.items.length)$('controlRows').append(node('p','No hay registros para estos filtros.'));
+  controlCursor=r.next_cursor;$('controlMore').hidden=!controlCursor;
+ }catch(error){if(version===controlVersion)$('controlError').textContent=error.message;}
+ finally{if(version===controlVersion){controlBusy=false;$('controlMore').disabled=false;}}
+}
+$('controlForm').onsubmit=event=>{event.preventDefault();loadControl();};$('controlMore').onclick=()=>loadControl(true);
