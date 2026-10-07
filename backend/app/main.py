@@ -324,6 +324,9 @@ class Supplier(Base):
 
 class Purchase(Base):
     __tablename__ = 'purchases'
+    cancel_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    cancelled_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     id: Mapped[int] = mapped_column(primary_key=True)
     empresa_id: Mapped[int] = mapped_column(Integer, index=True)
     branch_id: Mapped[int] = mapped_column(ForeignKey('branches.id'))
@@ -1585,10 +1588,13 @@ def purchase_view(db, purchase):
     supplier = db.get(Supplier, purchase.supplier_id)
     return {'id': purchase.id, 'branch_id': purchase.branch_id, 'supplier_id': purchase.supplier_id,
             'supplier_name': supplier.name, 'reference': purchase.reference, 'status': purchase.status,
+            'cancel_reason': purchase.cancel_reason, 'cancelled_by': purchase.cancelled_by,
+            'cancelled_at': purchase.cancelled_at.isoformat() if purchase.cancelled_at else None,
             'created_at': purchase.created_at.isoformat(), 'actor_id': purchase.actor_id,
             'total_cost': str(money(sum((x.unit_cost * x.quantity for x in purchase.items), Decimal('0')))),
             'items': [{'product_id': x.product_id, 'name': x.name, 'quantity': x.quantity,
-                       'received': x.received, 'pending': x.quantity - x.received, 'unit_cost': str(x.unit_cost)} for x in purchase.items]}
+                       'received': x.received, 'cancelled': x.quantity-x.received if purchase.status=='cancelled' else 0,
+                       'pending': 0 if purchase.status=='cancelled' else x.quantity - x.received, 'unit_cost': str(x.unit_cost)} for x in purchase.items]}
 
 @app.get('/api/purchases')
 def purchases(branch_id: int, user: User = Depends(identity)):
@@ -1652,6 +1658,8 @@ def receive_purchase(purchase_id: int, data: ReceiptIn, idempotency_key: str = H
             if previous.purchase_id != purchase_id or previous.payload != payload:
                 raise HTTPException(409, 'Clave de recepción utilizada con otros datos')
             return {'id': previous.id, 'purchase_id': purchase.id, 'status': purchase.status, 'replayed': True}
+        if purchase.status == 'cancelled':
+            raise HTTPException(409, 'Orden cancelada: no admite nuevas recepciones')
         lines = {x.product_id: x for x in purchase.items}
         for item in data.items:
             if item.product_id not in lines or item.quantity > lines[item.product_id].quantity - lines[item.product_id].received:
@@ -2441,6 +2449,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'sale_returns' in inspect(engine).get_table_names() and 'status' not in {c['name'] for c in inspect(engine).get_columns('sale_returns')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'purchases' in inspect(engine).get_table_names() and 'cancel_reason' not in {c['name'] for c in inspect(engine).get_columns('purchases')}:
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:
         if not db.scalar(select(Branch.id).where(Branch.empresa_id == 1).limit(1)):
@@ -2477,3 +2487,28 @@ def audit_report(branch_id: int, start: date, end: date, actor_id: int | None = 
 def payment_reconciliation(branch_id: int, start: date, end: date,
                            before_id: str | None = Query(default=None, max_length=60), user: User = Depends(identity)):
     return payment_page(branch_id,start,end,before_id,user)
+
+
+class PurchaseCancelIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+    reason: str = Field(min_length=3,max_length=300)
+
+@app.post('/api/purchases/{purchase_id}/cancel')
+def cancel_purchase(purchase_id:int,data:PurchaseCancelIn,user:User=Depends(identity)):
+    require(user,'purchase_write')
+    with Session(engine) as db:
+        purchase=db.scalar(select(Purchase).where(Purchase.id==purchase_id,Purchase.empresa_id==user.empresa_id))
+        if purchase is None:raise HTTPException(404,'Compra no encontrada')
+        branch_for(db,user,purchase.branch_id)
+        db.scalar(select(Branch).where(Branch.id==purchase.branch_id).with_for_update())
+        db.refresh(purchase,with_for_update=True)
+        if purchase.status=='cancelled':
+            if purchase.cancel_reason!=data.reason:raise HTTPException(409,'La orden ya se canceló con otro motivo')
+            return {**purchase_view(db,purchase),'replayed':True}
+        if purchase.status not in ('ordered','partial') or all(x.received==x.quantity for x in purchase.items):
+            raise HTTPException(409,'La orden ya se recibió por completo')
+        purchase.status='cancelled';purchase.cancel_reason=data.reason
+        purchase.cancelled_by=user.id;purchase.cancelled_at=datetime.now(timezone.utc)
+        db.add(Audit(empresa_id=user.empresa_id,branch_id=purchase.branch_id,actor_id=user.id,
+                     action='purchase_cancelled',record_id=purchase.id))
+        result={**purchase_view(db,purchase),'replayed':False};db.commit();return result

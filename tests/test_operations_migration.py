@@ -59,7 +59,7 @@ def test_returns_upgrade_unstamped_modern_demo(tmp_path):
     with sqlite3.connect(path) as db:db.execute('DROP TABLE alembic_version')
     run('scripts/migrate_local.py',str(path))
     with sqlite3.connect(path) as db:
-        assert db.execute('SELECT version_num FROM alembic_version').fetchone()[0]=='2bf5680d2374'
+        assert db.execute('SELECT version_num FROM alembic_version').fetchone()[0]=='3c06791e3485'
         assert db.execute('SELECT COUNT(*) FROM sale_returns').fetchone()[0]==0
         assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
 

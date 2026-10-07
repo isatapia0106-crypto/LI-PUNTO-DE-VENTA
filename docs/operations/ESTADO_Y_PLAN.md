@@ -15,6 +15,8 @@ Actualizado el 7 de octubre de 2026. Implementación y validaciones automatizada
 
 ## Avances posteriores
 
+- Cancelación de cantidades pendientes de compras, conservando recepciones e inventario, con bloqueo concurrente y auditoría.
+
 - Administración de usuarios, desactivación y revocación de sesiones.
 - Devoluciones parciales, cancelaciones y conservación de cortes cerrados; reembolsos integrados de Mercado Pago con confirmación antes de reintegrar inventario.
 - Reportes por fecha/cajero, utilidad histórica, Excel, impresión y enlace manual WhatsApp.
@@ -31,7 +33,7 @@ Actualizado el 7 de octubre de 2026. Implementación y validaciones automatizada
 2. Empresas: razones sociales, datos fiscales y configuración por empresa/sucursal.
 3. Productos/ventas: cantidades fraccionarias, precios por sucursal, vigencias, descuentos por partida, series fiscales y crédito si se aprueba.
 4. Caja: solicitud y aprobación separadas de movimientos, conciliación de comisiones y liquidaciones bancarias; validación real de pagos integrados. Administración puede cerrar un turno ajeno; el cierre registra quién lo realizó.
-5. Compras/inventario: cancelación de órdenes, impuestos de compra, cuentas por pagar, conteos masivos y valoración de inventario que no tenía costo registrado.
+5. Compras/inventario: impuestos de compra, cuentas por pagar, conteos masivos y valoración de inventario que no tenía costo registrado.
 6. Operación: datos fiscales de clientes, consentimiento y aceptación de reportes en piloto.
 7. Integraciones: PAC/CFDI, Clip, impresora/lector/cajón y operación offline si se aprueba.
 8. Infraestructura: ejecutar restauración y pruebas de carga en el entorno real, configurar monitoreo y realizar piloto por sucursal.
