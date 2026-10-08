@@ -362,6 +362,17 @@ class PurchaseReceipt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     __table_args__ = (UniqueConstraint('empresa_id', 'request_key'),)
 
+class InventoryCountBatch(Base):
+    __tablename__='inventory_count_batches'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer,index=True)
+    branch_id: Mapped[int] = mapped_column(ForeignKey('branches.id'))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    request_key: Mapped[str] = mapped_column(String(100))
+    payload: Mapped[str] = mapped_column(String(20000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    __table_args__=(UniqueConstraint('empresa_id','request_key'),)
+
 class InventoryCount(Base):
     __tablename__ = 'inventory_counts'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -2508,6 +2519,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'supplier_payments' in inspect(engine).get_table_names() and 'reversed_at' not in {c['name'] for c in inspect(engine).get_columns('supplier_payments')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'inventory_counts' in inspect(engine).get_table_names() and 'inventory_count_batches' not in inspect(engine).get_table_names():
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:
         if not db.scalar(select(Branch.id).where(Branch.empresa_id == 1).limit(1)):
@@ -2599,3 +2612,47 @@ def register_supplier_return(purchase_id:int,data:SupplierReturnIn,idempotency_k
 @app.get('/api/purchases/{purchase_id}/supplier-returns')
 def supplier_return_history(purchase_id:int,user:User=Depends(identity)):
     return list_supplier_returns(purchase_id,user)
+
+
+class BatchCountLine(BaseModel):
+    product_id:int=Field(gt=0)
+    expected:int=Field(ge=0,le=100000000)
+    counted:int=Field(ge=0,le=100000000)
+
+class BatchCountIn(BaseModel):
+    model_config=ConfigDict(str_strip_whitespace=True,extra='forbid')
+    branch_id:int=Field(gt=0)
+    reason:str=Field(min_length=3,max_length=160)
+    items:list[BatchCountLine]=Field(min_length=1,max_length=100)
+
+@app.post('/api/stock/counts/batch',status_code=201)
+def reconcile_batch(data:BatchCountIn,idempotency_key:str=Header(min_length=8,max_length=100),user:User=Depends(identity)):
+    require(user,'count_write')
+    ids=[x.product_id for x in data.items]
+    if len(ids)!=len(set(ids)):raise HTTPException(422,'Productos duplicados en conteo')
+    payload=json.dumps({'reason':data.reason,'items':sorted([x.model_dump() for x in data.items],key=lambda x:x['product_id'])},sort_keys=True,separators=(',',':'))
+    with Session(engine) as db:
+        branch_for(db,user,data.branch_id)
+        db.scalar(select(Branch).where(Branch.id==data.branch_id).with_for_update())
+        previous=db.scalar(select(InventoryCountBatch).where(InventoryCountBatch.empresa_id==user.empresa_id,InventoryCountBatch.request_key==idempotency_key))
+        if previous:
+            if previous.branch_id!=data.branch_id or previous.payload!=payload:raise HTTPException(409,'Clave utilizada con otro conteo masivo')
+            return {'id':previous.id,'replayed':True,'items':json.loads(previous.payload)['items']}
+        rows=db.execute(select(Product,Stock).join(Stock).where(Product.empresa_id==user.empresa_id,Product.id.in_(ids),Stock.branch_id==data.branch_id).order_by(Product.id).with_for_update()).all()
+        stocks={product.id:stock for product,stock in rows}
+        if len(stocks)!=len(ids):raise HTTPException(404,'Algún producto no tiene inventario en esta sucursal')
+        # Validate every line before any mutation; rollback remains all-or-nothing.
+        for line in data.items:
+            if stocks[line.product_id].quantity!=line.expected:raise HTTPException(409,f'Producto #{line.product_id}: inventario cambió; revisa el conteo completo')
+            if line.counted<reserved_quantity(db,data.branch_id,line.product_id):raise HTTPException(409,f'Producto #{line.product_id}: conteo afecta existencias reservadas')
+        batch=InventoryCountBatch(empresa_id=user.empresa_id,branch_id=data.branch_id,actor_id=user.id,request_key=idempotency_key,payload=payload)
+        db.add(batch);db.flush()
+        for line in sorted(data.items,key=lambda x:x.product_id):
+            count=InventoryCount(empresa_id=user.empresa_id,branch_id=data.branch_id,actor_id=user.id,product_id=line.product_id,
+                expected=line.expected,counted=line.counted,reason=data.reason,request_key=f'batch-{batch.id}-{line.product_id}')
+            db.add(count);db.flush();stocks[line.product_id].quantity=line.counted
+            db.add(StockMovement(empresa_id=user.empresa_id,branch_id=data.branch_id,actor_id=user.id,product_id=line.product_id,
+                 change=line.counted-line.expected,reason='count_reconciled',reference_id=count.id))
+            db.add(Audit(empresa_id=user.empresa_id,branch_id=data.branch_id,actor_id=user.id,action='count_reconciled',record_id=count.id))
+        db.add(Audit(empresa_id=user.empresa_id,branch_id=data.branch_id,actor_id=user.id,action='count_batch_reconciled',record_id=batch.id))
+        result={'id':batch.id,'replayed':False,'items':json.loads(payload)['items']};db.commit();return result

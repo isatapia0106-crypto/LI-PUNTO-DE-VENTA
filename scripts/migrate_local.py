@@ -69,6 +69,8 @@ def migrate(path):
                 baseline = '5e289b3056a7'
             if baseline == '5e289b3056a7' and 'supplier_returns' in names and 'reversed_at' in {x[1] for x in db.execute('PRAGMA table_info(supplier_payments)')}:
                 baseline = '6f39ac4167b8'
+            if baseline == '6f39ac4167b8' and 'inventory_count_batches' in names:
+                baseline = '704abd5278c9'
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise SystemExit('La base tiene errores de integridad. No se modificó.')
         backup = path.with_name(path.name + '.backup-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))

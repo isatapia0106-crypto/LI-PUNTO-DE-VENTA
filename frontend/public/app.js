@@ -581,3 +581,19 @@ async function openSupplierReturn(purchase){
  form.onsubmit=async event=>{event.preventDefault();if(version!==supplierReturnVersion)return;submit.disabled=true;close.disabled=true;error.textContent='';try{const items=fields.map(([product_id,input])=>({product_id,quantity:Number(input.value)})).filter(x=>x.quantity>0);if(!items.length)throw Error('Captura alguna cantidad');if(!confirm('¿Descontar mercancía y registrar el crédito aceptado por el proveedor?'))return;await post('/api/purchases/'+purchase.id+'/supplier-returns',{items,reason:reason.value.trim(),credit_reference:reference.value.trim()},true);clearSupplierReturn();await refresh();if(can('report'))await loadPayables();notice('Devolución y crédito registrados');}catch(e){if(version===supplierReturnVersion)error.textContent=e.message;}finally{submit.disabled=false;close.disabled=false;}};
  supplierReturnDialog.replaceChildren(form);if(!supplierReturnDialog.open)supplierReturnDialog.showModal();
 }
+const batchDialog=node('dialog');batchDialog.setAttribute('aria-label','Conteo masivo');document.body.append(batchDialog);
+let batchVersion=0;
+function clearBatchCount(){batchVersion++;batchDialog.close();batchDialog.replaceChildren();}
+$('branch').addEventListener('change',clearBatchCount);$('logout').addEventListener('click',clearBatchCount);
+$('batchCountOpen').onclick=run(async()=>{
+ if(!can('count_write'))throw Error('Se requiere permiso para conciliar conteos');
+ const version=++batchVersion,selected=branchId();const rows=await request('/api/products?branch_id='+selected);
+ if(version!==batchVersion||!token)return;
+ const form=node('form');form.append(node('h2','Conteo masivo'),node('p','Captura sólo productos contados. Los campos vacíos se omiten. La captura usa existencias al abrir; si cambian, vuelve a consultar y revisar. Máximo 100 productos por envío.'));
+ const search=node('input');search.type='search';search.placeholder='Filtrar nombre o SKU';search.setAttribute('aria-label','Filtrar productos');form.append(search);
+ const fields=[];for(const p of rows){const label=node('label',p.name+' · '+p.sku+' · Sistema: '+p.stock+' '+p.unit);const input=node('input');input.type='number';input.min='0';input.max='100000000';input.step='1';input.placeholder='Cantidad física';label.append(input);form.append(label);fields.push([p,input,label]);}
+ search.oninput=()=>{const q=search.value.toLocaleLowerCase();for(const [p,input,label] of fields)label.hidden=!(p.name+' '+p.sku).toLocaleLowerCase().includes(q);};
+ const reason=node('input');reason.required=true;reason.minLength=3;reason.maxLength=160;const reasonLabel=node('label','Motivo de conciliación');reasonLabel.append(reason);const error=node('p');error.setAttribute('role','alert');const submit=node('button','Revisar y aplicar conteo');const cancel=button('Cerrar',clearBatchCount);form.append(reasonLabel,error,submit,cancel);
+ form.onsubmit=async event=>{event.preventDefault();if(version!==batchVersion)return;error.textContent='';submit.disabled=true;cancel.disabled=true;try{const items=fields.filter(([p,i])=>i.value!=='').map(([p,i])=>({product_id:p.id,expected:p.stock,counted:Number(i.value)}));if(!items.length||items.length>100)throw Error('Captura entre 1 y 100 productos');const changed=items.filter(x=>x.counted!==x.expected);if(!confirm('¿Aplicar '+items.length+' conteos con '+changed.length+' diferencias? Se incluyen cantidades capturadas aunque estén ocultas por el filtro.'))return;await post('/api/stock/counts/batch',{branch_id:selected,reason:reason.value.trim(),items},true);clearBatchCount();await refresh();notice('Conteo masivo conciliado completo');}catch(e){if(version===batchVersion)error.textContent=e.message;}finally{submit.disabled=false;cancel.disabled=false;}};
+ batchDialog.replaceChildren(form);if(!batchDialog.open)batchDialog.showModal();
+});

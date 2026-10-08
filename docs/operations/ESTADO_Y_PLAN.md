@@ -13,7 +13,7 @@ Actualizado el 7 de octubre de 2026. Implementación y validaciones automatizada
 - Inventario: kardex con actor/fecha, ajuste, traspaso que conserva costo de origen y conteo físico conciliado. El conteo verifica la existencia esperada para evitar sobrescribir movimientos recientes.
 - Migración Alembic `f2b3409ac871`, actualización local con respaldo automático y comprobación de preservación de ventas/stock. El lanzador Windows migra las versiones reconocidas antes de iniciar.
 
-## Avances posteriores\n\n- Reversos de abonos con motivo y responsable; devoluciones a proveedor con reducción de stock, crédito a cuenta y saldo a favor si excede deuda. Histórico original conservado.\n\n- Cuentas por pagar: reconocimiento explícito por compra recibida completa, factura única por proveedor, saldo, vencimiento y abonos manuales externos con idempotencia y bloqueo concurrente.\n\n- Impuesto histórico por partida de compra; subtotal, impuesto y total. Recepciones conservan costo promedio sin impuestos.
+## Avances posteriores\n\n- Conteos masivos de hasta 100 productos por transacción con validación de reservas, stock esperado, grupos durables e idempotencia.\n\n- Reversos de abonos con motivo y responsable; devoluciones a proveedor con reducción de stock, crédito a cuenta y saldo a favor si excede deuda. Histórico original conservado.\n\n- Cuentas por pagar: reconocimiento explícito por compra recibida completa, factura única por proveedor, saldo, vencimiento y abonos manuales externos con idempotencia y bloqueo concurrente.\n\n- Impuesto histórico por partida de compra; subtotal, impuesto y total. Recepciones conservan costo promedio sin impuestos.
 
 - Cancelación de cantidades pendientes de compras, conservando recepciones e inventario, con bloqueo concurrente y auditoría.
 
@@ -33,7 +33,7 @@ Actualizado el 7 de octubre de 2026. Implementación y validaciones automatizada
 2. Empresas: razones sociales, datos fiscales y configuración por empresa/sucursal.
 3. Productos/ventas: cantidades fraccionarias, precios por sucursal, vigencias, descuentos por partida, series fiscales y crédito si se aprueba.
 4. Caja: solicitud y aprobación separadas de movimientos, conciliación de comisiones y liquidaciones bancarias; validación real de pagos integrados. Administración puede cerrar un turno ajeno; el cierre registra quién lo realizó.
-5. Compras/inventario: retenciones de compra y facturación parcial, conteos masivos y valoración de inventario que no tenía costo registrado.
+5. Compras/inventario: retenciones de compra y facturación parcial, importación de conteos y valoración de inventario que no tenía costo registrado.
 6. Operación: datos fiscales de clientes, consentimiento y aceptación de reportes en piloto.
 7. Integraciones: PAC/CFDI, Clip, impresora/lector/cajón y operación offline si se aprueba.
 8. Infraestructura: ejecutar restauración y pruebas de carga en el entorno real, configurar monitoreo y realizar piloto por sucursal.
