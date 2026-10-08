@@ -154,6 +154,7 @@ async function refreshPurchases(){
     if(p.status==='cancelled')for(const x of p.items)card.append(node('p',x.name+' · Cancelado sin recibir: '+x.cancelled));
     if(p.status==='cancelled')card.append(node('p','Cancelada: '+p.cancel_reason+' · '+fecha(p.cancelled_at)+' · Usuario #'+p.cancelled_by));
     if(can('purchase_write')&&['ordered','partial'].includes(p.status))card.append(button('Cancelar pendientes',async()=>{const reason=prompt('Motivo de cancelación (mínimo 3 caracteres). Se conservarán las recepciones y el inventario ya registrados.');if(reason===null)return;if(reason.trim().length<3)throw Error('Captura un motivo de al menos 3 caracteres');if(!confirm('¿Cancelar las cantidades pendientes de esta orden?'))return;await post(`/api/purchases/${p.id}/cancel`,{reason:reason.trim()});await refresh();notice('Orden cancelada; recepciones e inventario conservados');}));
+    if(can('payable_write')&&p.status==='received')card.append(button('Registrar cuenta por pagar',async()=>{const invoice=prompt('Referencia de factura del proveedor:');if(invoice===null)return;const due_date=prompt('Vencimiento (AAAA-MM-DD):');if(due_date===null)return;if(!confirm('¿Reconocer una cuenta por pagar por '+pesos(p.total)+'? No se enviará dinero.'))return;await post('/api/payables',{purchase_id:p.id,invoice,due_date});await loadPayables();notice('Cuenta por pagar registrada');}));
     card.append(button('Ver recepciones',async()=>{const rows=await request(`/api/purchases/${p.id}/receipts`);showText(['LI PUNTO DE VENTA',`Recepciones de orden #${p.id} · ${p.reference}`, ...rows.map(r=>`Recepción #${r.id} · ${fecha(r.created_at)} · Usuario #${r.actor_id}\n`+r.items.map(i=>`${p.items.find(x=>x.product_id===i.product_id)?.name??i.product_id}: ${i.quantity}`).join('\n'))].join('\n'));}));return card;
   }));
 }
@@ -536,3 +537,27 @@ async function loadControl(more=false){
  finally{if(version===controlVersion){controlBusy=false;$('controlMore').disabled=false;}}
 }
 $('controlForm').onsubmit=event=>{event.preventDefault();loadControl();};$('controlMore').onclick=()=>loadControl(true);
+
+let payableVersion=0,payableCursor=null,payableBusy=false;
+function clearPayables(){payableVersion++;payableCursor=null;payableBusy=false;$('payablesList').replaceChildren();$('payablesMore').hidden=true;}
+$('branch').addEventListener('change',clearPayables);$('logout').addEventListener('click',clearPayables);
+async function loadPayables(more=false){
+ if(!can('report'))return notice('Se requiere permiso de reportes para consultar cuentas.');if(payableBusy)return;
+ const version=payableVersion,selected=branchId();payableBusy=true;
+ if(!more){payableCursor=null;$('payablesList').replaceChildren();}
+ try{
+  const result=await request('/api/payables?branch_id='+selected+(more&&payableCursor?'&before_id='+payableCursor:''));
+  if(version!==payableVersion||!token)return;
+  for(const r of result.items){const card=node('article',undefined,'assistant-answer');card.append(node('strong',r.supplier+' · Factura '+r.invoice),node('p','Orden #'+r.purchase_id+' · Vence '+r.due_date+' · '+({paid:'Pagada',overdue:'Vencida',pending:'Pendiente'}[r.status])),node('p','Importe: '+pesos(r.amount)+' · Abonado: '+pesos(r.paid)+' · Saldo: '+pesos(r.balance)));
+   card.append(button('Ver abonos',()=>showText(['Cuenta #'+r.id+' · '+r.invoice,...r.payments.map(p=>fecha(p.created_at)+' · '+pesos(p.amount)+' · '+p.method+' · '+p.reference+' · Usuario #'+p.actor_id)].join('\n'))));
+   if(can('payable_write')&&Number(r.balance)>0){const form=node('form');const amount=node('input');amount.type='number';amount.min='.01';amount.step='.01';amount.max=r.balance;amount.required=true;const amountLabel=node('label','Importe del abono');amountLabel.append(amount);
+    const ref=node('input');ref.required=true;ref.minLength=3;ref.maxLength=100;const refLabel=node('label','Referencia del pago externo');refLabel.append(ref);
+    const method=node('select');for(const [value,label] of [['transfer','Transferencia manual'],['card','Tarjeta manual']]){const opt=node('option',label);opt.value=value;method.append(opt);}const methodLabel=node('label','Método');methodLabel.append(method);const submit=node('button','Registrar abono');form.append(amountLabel,refLabel,methodLabel,submit);
+    form.onsubmit=run(async event=>{event.preventDefault();if(version!==payableVersion||selected!==branchId())throw Error('La sucursal cambió; vuelve a consultar la cuenta.');if(!confirm('¿Registrar este pago realizado fuera del sistema? No se enviará dinero.'))return;submit.disabled=true;try{await post('/api/payables/'+r.id+'/payments',{amount:amount.value,reference:ref.value.trim(),method:method.value},true);await loadPayables();notice('Abono registrado');}finally{submit.disabled=false;}});card.append(form);}
+   $('payablesList').append(card);
+  }
+  if(!more&&!result.items.length)$('payablesList').append(node('p','Sin cuentas registradas en esta sucursal.'));
+  payableCursor=result.next_cursor;$('payablesMore').hidden=!payableCursor;
+ }finally{if(version===payableVersion)payableBusy=false;}
+}
+$('loadPayables').onclick=run(()=>loadPayables());$('payablesMore').onclick=run(()=>loadPayables(true));

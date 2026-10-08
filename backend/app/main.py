@@ -376,6 +376,33 @@ class InventoryCount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     __table_args__ = (UniqueConstraint('empresa_id', 'request_key'),)
 
+class Payable(Base):
+    __tablename__='supplier_payables'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer,index=True)
+    branch_id: Mapped[int] = mapped_column(ForeignKey('branches.id'))
+    supplier_id: Mapped[int] = mapped_column(ForeignKey('suppliers.id'))
+    purchase_id: Mapped[int] = mapped_column(ForeignKey('purchases.id'),unique=True)
+    invoice: Mapped[str] = mapped_column(String(100))
+    due_date: Mapped[date] = mapped_column()
+    amount: Mapped[Decimal] = mapped_column(Numeric(12,2))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    __table_args__=(UniqueConstraint('empresa_id','supplier_id','invoice'),)
+
+class PayablePayment(Base):
+    __tablename__='supplier_payments'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer,index=True)
+    payable_id: Mapped[int] = mapped_column(ForeignKey('supplier_payables.id'))
+    amount: Mapped[Decimal] = mapped_column(Numeric(12,2))
+    reference: Mapped[str] = mapped_column(String(100))
+    method: Mapped[str] = mapped_column(String(30))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    request_key: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    __table_args__=(UniqueConstraint('empresa_id','request_key'),)
+
 class Audit(Base):
     __tablename__ = 'audit_logs'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -485,12 +512,12 @@ if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(48)  # Transient local key; restarts invalidate sessions.
 
 ROLE_ACTIONS = {
-    'admin_general': {'sale_cancel', 'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
-    'admin_sucursal': {'sale_cancel', 'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
+    'admin_general': {'payable_write', 'sale_cancel', 'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report', 'users_write'},
+    'admin_sucursal': {'payable_write', 'sale_cancel', 'sale_return', 'discount', 'purchase_write', 'purchase_read', 'count_write', 'cash_deposit', 'sale', 'catalog_write', 'customer_read', 'customer_write', 'stock_write', 'cash_open', 'cash_close', 'cash_withdraw', 'report'},
     'cajero': {'sale', 'customer_read', 'customer_write', 'cash_open', 'cash_close'},
     'almacenista': {'stock_write', 'purchase_read', 'purchase_receive'},
     'supervisor_inventarios': {'stock_write', 'report', 'purchase_read', 'purchase_receive', 'count_write'},
-    'contabilidad': {'report', 'customer_read', 'purchase_read'},
+    'contabilidad': {'payable_write', 'report', 'customer_read', 'purchase_read'},
     'repartidor': set(),
     'auditoria': {'report'},
 }
@@ -2459,6 +2486,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'purchase_items' in inspect(engine).get_table_names() and 'tax_rate' not in {c['name'] for c in inspect(engine).get_columns('purchase_items')}:
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'purchases' in inspect(engine).get_table_names() and 'supplier_payables' not in inspect(engine).get_table_names():
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:
         if not db.scalar(select(Branch.id).where(Branch.empresa_id == 1).limit(1)):
@@ -2520,3 +2549,18 @@ def cancel_purchase(purchase_id:int,data:PurchaseCancelIn,user:User=Depends(iden
         db.add(Audit(empresa_id=user.empresa_id,branch_id=purchase.branch_id,actor_id=user.id,
                      action='purchase_cancelled',record_id=purchase.id))
         result={**purchase_view(db,purchase),'replayed':False};db.commit();return result
+
+
+from .payables import PayableIn, PayablePaymentIn, create_payable, list_payables, add_payable_payment
+
+@app.post('/api/payables',status_code=201)
+def register_payable(data:PayableIn,user:User=Depends(identity)):
+    return create_payable(data,user)
+
+@app.get('/api/payables')
+def supplier_payables(branch_id:int,before_id:int|None=Query(default=None,gt=0),user:User=Depends(identity)):
+    return list_payables(branch_id,before_id,user)
+
+@app.post('/api/payables/{payable_id}/payments',status_code=201)
+def supplier_payment(payable_id:int,data:PayablePaymentIn,idempotency_key:str=Header(min_length=8,max_length=100),user:User=Depends(identity)):
+    return add_payable_payment(payable_id,data,idempotency_key,user)
