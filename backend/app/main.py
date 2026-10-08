@@ -392,6 +392,9 @@ class Payable(Base):
 
 class PayablePayment(Base):
     __tablename__='supplier_payments'
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),nullable=True)
+    reversed_by: Mapped[int | None] = mapped_column(Integer,nullable=True)
+    reversal_reason: Mapped[str | None] = mapped_column(String(300),nullable=True)
     id: Mapped[int] = mapped_column(primary_key=True)
     empresa_id: Mapped[int] = mapped_column(Integer,index=True)
     payable_id: Mapped[int] = mapped_column(ForeignKey('supplier_payables.id'))
@@ -399,6 +402,21 @@ class PayablePayment(Base):
     reference: Mapped[str] = mapped_column(String(100))
     method: Mapped[str] = mapped_column(String(30))
     actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    request_key: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    __table_args__=(UniqueConstraint('empresa_id','request_key'),)
+
+class SupplierReturn(Base):
+    __tablename__='supplier_returns'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(Integer,index=True)
+    purchase_id: Mapped[int] = mapped_column(ForeignKey('purchases.id'))
+    payable_id: Mapped[int] = mapped_column(ForeignKey('supplier_payables.id'))
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    reason: Mapped[str] = mapped_column(String(300))
+    credit_reference: Mapped[str] = mapped_column(String(100))
+    total: Mapped[Decimal] = mapped_column(Numeric(12,2))
+    payload: Mapped[str] = mapped_column(String(20000))
     request_key: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
     __table_args__=(UniqueConstraint('empresa_id','request_key'),)
@@ -2488,6 +2506,8 @@ if os.getenv('APP_ENV', 'demo') != 'production':
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     if 'purchases' in inspect(engine).get_table_names() and 'supplier_payables' not in inspect(engine).get_table_names():
         raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
+    if 'supplier_payments' in inspect(engine).get_table_names() and 'reversed_at' not in {c['name'] for c in inspect(engine).get_columns('supplier_payments')}:
+        raise RuntimeError('Base anterior: ejecuta python scripts/migrate_local.py antes de iniciar')
     Base.metadata.create_all(engine)  # Only for a fresh local demo DB.
     with Session(engine) as db:
         if not db.scalar(select(Branch.id).where(Branch.empresa_id == 1).limit(1)):
@@ -2564,3 +2584,18 @@ def supplier_payables(branch_id:int,before_id:int|None=Query(default=None,gt=0),
 @app.post('/api/payables/{payable_id}/payments',status_code=201)
 def supplier_payment(payable_id:int,data:PayablePaymentIn,idempotency_key:str=Header(min_length=8,max_length=100),user:User=Depends(identity)):
     return add_payable_payment(payable_id,data,idempotency_key,user)
+
+
+from .payables import ReverseIn, reverse_payment, SupplierReturnIn, return_to_supplier, list_supplier_returns
+
+@app.post('/api/payables/payments/{payment_id}/reverse')
+def reverse_supplier_payment(payment_id:int,data:ReverseIn,user:User=Depends(identity)):
+    return reverse_payment(payment_id,data,user)
+
+@app.post('/api/purchases/{purchase_id}/supplier-returns',status_code=201)
+def register_supplier_return(purchase_id:int,data:SupplierReturnIn,idempotency_key:str=Header(min_length=8,max_length=100),user:User=Depends(identity)):
+    return return_to_supplier(purchase_id,data,idempotency_key,user)
+
+@app.get('/api/purchases/{purchase_id}/supplier-returns')
+def supplier_return_history(purchase_id:int,user:User=Depends(identity)):
+    return list_supplier_returns(purchase_id,user)

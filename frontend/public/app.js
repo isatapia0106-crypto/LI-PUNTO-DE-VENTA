@@ -155,6 +155,8 @@ async function refreshPurchases(){
     if(p.status==='cancelled')card.append(node('p','Cancelada: '+p.cancel_reason+' · '+fecha(p.cancelled_at)+' · Usuario #'+p.cancelled_by));
     if(can('purchase_write')&&['ordered','partial'].includes(p.status))card.append(button('Cancelar pendientes',async()=>{const reason=prompt('Motivo de cancelación (mínimo 3 caracteres). Se conservarán las recepciones y el inventario ya registrados.');if(reason===null)return;if(reason.trim().length<3)throw Error('Captura un motivo de al menos 3 caracteres');if(!confirm('¿Cancelar las cantidades pendientes de esta orden?'))return;await post(`/api/purchases/${p.id}/cancel`,{reason:reason.trim()});await refresh();notice('Orden cancelada; recepciones e inventario conservados');}));
     if(can('payable_write')&&p.status==='received')card.append(button('Registrar cuenta por pagar',async()=>{const invoice=prompt('Referencia de factura del proveedor:');if(invoice===null)return;const due_date=prompt('Vencimiento (AAAA-MM-DD):');if(due_date===null)return;if(!confirm('¿Reconocer una cuenta por pagar por '+pesos(p.total)+'? No se enviará dinero.'))return;await post('/api/payables',{purchase_id:p.id,invoice,due_date});await loadPayables();notice('Cuenta por pagar registrada');}));
+    if(can('purchase_write')&&p.status==='received')card.append(button('Devolver a proveedor',()=>openSupplierReturn(p)));
+    if(p.status==='received')card.append(button('Historial de devoluciones',async()=>{const rows=await request('/api/purchases/'+p.id+'/supplier-returns');showText(rows.length?rows.map(r=>'Devolución #'+r.id+' · '+fecha(r.created_at)+' · '+pesos(r.total)+' · '+r.credit_reference+' · '+r.reason).join('\n'):'Sin devoluciones a proveedor.');}));
     card.append(button('Ver recepciones',async()=>{const rows=await request(`/api/purchases/${p.id}/receipts`);showText(['LI PUNTO DE VENTA',`Recepciones de orden #${p.id} · ${p.reference}`, ...rows.map(r=>`Recepción #${r.id} · ${fecha(r.created_at)} · Usuario #${r.actor_id}\n`+r.items.map(i=>`${p.items.find(x=>x.product_id===i.product_id)?.name??i.product_id}: ${i.quantity}`).join('\n'))].join('\n'));}));return card;
   }));
 }
@@ -548,8 +550,9 @@ async function loadPayables(more=false){
  try{
   const result=await request('/api/payables?branch_id='+selected+(more&&payableCursor?'&before_id='+payableCursor:''));
   if(version!==payableVersion||!token)return;
-  for(const r of result.items){const card=node('article',undefined,'assistant-answer');card.append(node('strong',r.supplier+' · Factura '+r.invoice),node('p','Orden #'+r.purchase_id+' · Vence '+r.due_date+' · '+({paid:'Pagada',overdue:'Vencida',pending:'Pendiente'}[r.status])),node('p','Importe: '+pesos(r.amount)+' · Abonado: '+pesos(r.paid)+' · Saldo: '+pesos(r.balance)));
-   card.append(button('Ver abonos',()=>showText(['Cuenta #'+r.id+' · '+r.invoice,...r.payments.map(p=>fecha(p.created_at)+' · '+pesos(p.amount)+' · '+p.method+' · '+p.reference+' · Usuario #'+p.actor_id)].join('\n'))));
+  for(const r of result.items){const card=node('article',undefined,'assistant-answer');card.append(node('strong',r.supplier+' · Factura '+r.invoice),node('p','Orden #'+r.purchase_id+' · Vence '+r.due_date+' · '+({paid:'Pagada',overdue:'Vencida',pending:'Pendiente',credit:'Saldo a favor'}[r.status])),node('p','Importe: '+pesos(r.amount)+' · Abonado: '+pesos(r.paid)+' · Créditos: '+pesos(r.credits)+' · Saldo: '+pesos(r.balance)+' · A favor: '+pesos(r.supplier_credit)));
+   card.append(button('Ver abonos',()=>showText(['Cuenta #'+r.id+' · '+r.invoice,...r.payments.map(p=>fecha(p.created_at)+' · '+pesos(p.amount)+' · '+p.method+' · '+p.reference+' · Usuario #'+p.actor_id+(p.reversed_at?' · REVERTIDO '+fecha(p.reversed_at)+' · '+p.reversal_reason:'' ))].join('\n'))));
+   if(can('payable_write'))for(const payment of r.payments.filter(x=>!x.reversed_at))card.append(button('Revertir abono #'+payment.id,async()=>{if(version!==payableVersion||selected!==branchId())throw Error('Vuelve a consultar la cuenta');const reason=prompt('Motivo del reverso (mínimo 3 caracteres). Sólo corrige el registro; no mueve dinero.');if(reason===null)return;if(!confirm('¿Revertir '+pesos(payment.amount)+' y recalcular el saldo?'))return;await post('/api/payables/payments/'+payment.id+'/reverse',{reason});await loadPayables();notice('Abono revertido; historial conservado');}));
    if(can('payable_write')&&Number(r.balance)>0){const form=node('form');const amount=node('input');amount.type='number';amount.min='.01';amount.step='.01';amount.max=r.balance;amount.required=true;const amountLabel=node('label','Importe del abono');amountLabel.append(amount);
     const ref=node('input');ref.required=true;ref.minLength=3;ref.maxLength=100;const refLabel=node('label','Referencia del pago externo');refLabel.append(ref);
     const method=node('select');for(const [value,label] of [['transfer','Transferencia manual'],['card','Tarjeta manual']]){const opt=node('option',label);opt.value=value;method.append(opt);}const methodLabel=node('label','Método');methodLabel.append(method);const submit=node('button','Registrar abono');form.append(amountLabel,refLabel,methodLabel,submit);
@@ -561,3 +564,20 @@ async function loadPayables(more=false){
  }finally{if(version===payableVersion)payableBusy=false;}
 }
 $('loadPayables').onclick=run(()=>loadPayables());$('payablesMore').onclick=run(()=>loadPayables(true));
+
+const supplierReturnDialog=node('dialog');supplierReturnDialog.setAttribute('aria-label','Devolución a proveedor');document.body.append(supplierReturnDialog);
+let supplierReturnVersion=0;
+function clearSupplierReturn(){supplierReturnVersion++;supplierReturnDialog.close();supplierReturnDialog.replaceChildren();}
+$('branch').addEventListener('change',clearSupplierReturn);$('logout').addEventListener('click',clearSupplierReturn);
+async function openSupplierReturn(purchase){
+ const version=++supplierReturnVersion,selected=branchId();
+ const history=await request('/api/purchases/'+purchase.id+'/supplier-returns');if(version!==supplierReturnVersion||selected!==branchId()||!token)return;
+ const prior=new Map();for(const r of history)for(const x of r.items)prior.set(x.product_id,(prior.get(x.product_id)||0)+x.quantity);
+ const form=node('form');form.append(node('h2','Devolver orden #'+purchase.id),node('p','Sólo para mercancía que sale hacia el proveedor con crédito aceptado. Requiere cuenta por pagar registrada. No realiza reembolsos bancarios.'));
+ const fields=[];for(const line of purchase.items){const pending=line.received-(prior.get(line.product_id)||0);if(pending<=0)continue;const label=node('label',line.name+' · Disponible de esta compra: '+pending);const input=node('input');input.type='number';input.min='0';input.max=pending;input.step='1';input.value='0';label.append(input);form.append(label);fields.push([line.product_id,input]);}
+ const reason=node('input');reason.required=true;reason.minLength=3;reason.maxLength=300;const rl=node('label','Motivo');rl.append(reason);
+ const reference=node('input');reference.required=true;reference.minLength=3;reference.maxLength=100;const cl=node('label','Referencia del crédito aceptado por proveedor');cl.append(reference);
+ const error=node('p');error.setAttribute('role','alert');const submit=node('button','Confirmar devolución y crédito');const close=button('Cerrar',()=>clearSupplierReturn());form.append(rl,cl,error,submit,close);
+ form.onsubmit=async event=>{event.preventDefault();if(version!==supplierReturnVersion)return;submit.disabled=true;close.disabled=true;error.textContent='';try{const items=fields.map(([product_id,input])=>({product_id,quantity:Number(input.value)})).filter(x=>x.quantity>0);if(!items.length)throw Error('Captura alguna cantidad');if(!confirm('¿Descontar mercancía y registrar el crédito aceptado por el proveedor?'))return;await post('/api/purchases/'+purchase.id+'/supplier-returns',{items,reason:reason.value.trim(),credit_reference:reference.value.trim()},true);clearSupplierReturn();await refresh();if(can('report'))await loadPayables();notice('Devolución y crédito registrados');}catch(e){if(version===supplierReturnVersion)error.textContent=e.message;}finally{submit.disabled=false;close.disabled=false;}};
+ supplierReturnDialog.replaceChildren(form);if(!supplierReturnDialog.open)supplierReturnDialog.showModal();
+}
